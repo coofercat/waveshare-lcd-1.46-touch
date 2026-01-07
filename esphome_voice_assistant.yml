@@ -1,0 +1,1103 @@
+esphome:
+  name: waveshare-146-va
+  friendly_name: waveshare 146 va
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: y
+      CONFIG_SPIRAM_RODATA: y
+
+      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
+      CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
+
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y"  # TLS1.3 support isn't enabled by default in IDF 5.1.5
+
+
+# Enable logging
+logger:
+  level: DEBUG
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "/NRi8kWEuodQFhY40a8yvujDUELH0yhZIOTECv81wU0="
+
+ota:
+  - platform: esphome
+    password: "1554a3a8fd1fa8d97307d74f21aa9fde"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Waveshare-146-Va"
+    password: "wifi12345"
+
+captive_portal:
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+i2s_audio:
+  - id: i2s_output
+    # i2s_output data pin is gpio10
+    i2s_lrclk_pin:
+      number: GPIO38
+    i2s_bclk_pin:
+      number: GPIO48
+
+  - id: i2s_input
+    # data line is GPIO15
+    i2s_lrclk_pin:
+      number: GPIO2
+    i2s_bclk_pin:
+      number: GPIO15
+
+microphone:
+  - platform: i2s_audio
+    id: i2s_microphone
+    i2s_audio_id: i2s_input
+    i2s_din_pin: GPIO39
+    adc_type: external
+    pdm: false
+    channel: right
+    sample_rate: 16000
+    bits_per_sample: 16bit
+
+speaker:
+  - platform: i2s_audio
+    id: i2s_audio_speaker
+    i2s_audio_id: i2s_output
+    i2s_dout_pin: GPIO47
+    dac_type: external
+    channel: stereo
+    
+i2c:
+  sda: GPIO11
+  scl: GPIO10
+  scan: true
+  #frequency: 50kHz
+  #timeout: 1000ms
+
+
+# -----------------------------------------------------------------------------
+# MEDIA PLAYER → binds VA audio output to your existing i2s speaker
+# -----------------------------------------------------------------------------
+media_player:
+  - platform: speaker
+    id: speaker_media_player
+    name: None
+    volume_min: 0.5
+    volume_max: 1
+    announcement_pipeline:
+      speaker: i2s_audio_speaker     # <-- your speaker id
+      format: FLAC
+      sample_rate: 48000             # good with most I2S DACs
+      num_channels: 2                # you configured stereo
+    files:
+      - id: timer_finished_sound
+        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
+        # same asset used by S3 Box 3 example
+  
+    # Pause wake word during announcements, then redraw
+    on_announcement:
+      - if:
+          condition:
+            - microphone.is_capturing:
+          then:
+            - script.execute: stop_wake_word
+      # Show muted phase when media plays and VA isn't running
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - lambda: id(voice_assistant_phase) = id(voice_assist_muted_phase_id);
+            - script.execute: draw_display
+
+    on_idle:
+      # Restart wake word after announcement finishes
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - script.execute: start_wake_word
+            - script.execute: set_idle_or_mute_phase
+            - script.execute: draw_display
+
+# -----------------------------------------------------------------------------
+# ON-DEVICE MICRO WAKE WORD → same models as S3 Box 3
+# -----------------------------------------------------------------------------
+micro_wake_word:
+  id: mww
+  models:
+    - okay_nabu
+    - hey_mycroft
+    - hey_jarvis
+  on_wake_word_detected:
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+
+# -----------------------------------------------------------------------------
+# VOICE ASSISTANT CORE
+# -----------------------------------------------------------------------------
+voice_assistant:
+  id: va
+  microphone: i2s_microphone         # <-- your mic id
+  media_player: speaker_media_player  # <-- the media_player above
+  micro_wake_word: mww
+
+  # Audio tuning (same as S3 Box 3 baseline)  
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+
+  # UI hooks (update request/response + phases)
+  on_listening:
+    - lambda: id(voice_assistant_phase) = id(voice_assist_listening_phase_id);
+    - text_sensor.template.publish:
+        id: text_request
+        state: "..."
+    - text_sensor.template.publish:
+        id: text_response
+        state: "..."
+    - script.execute: draw_display
+
+  on_stt_vad_end:
+    - lambda: id(voice_assistant_phase) = id(voice_assist_thinking_phase_id);
+    - script.execute: draw_display
+
+  on_stt_end:
+    - text_sensor.template.publish:
+        id: text_request
+        state: !lambda return x;
+    - script.execute: draw_display
+
+  on_tts_start:
+    - text_sensor.template.publish:
+        id: text_response
+        state: !lambda return x;
+    - lambda: id(voice_assistant_phase) = id(voice_assist_replying_phase_id);
+    - script.execute: draw_display
+
+  
+  on_end:
+  # small wait in case an announcement starts
+    - wait_until:
+        condition:
+          media_player.is_announcing:
+        timeout: 0.5s
+
+  # wait for I2S bus to be free (no announcement and speaker not playing)
+    - wait_until:
+        condition:
+          and:
+            - not:
+                media_player.is_announcing:
+            - not:
+                speaker.is_playing:
+
+  # restart on-device wake word only if "On device"
+    - if:
+        condition:
+          lambda: return id(wake_word_engine_location).state == "On device";
+        then:
+          - lambda: id(va).set_use_wake_word(false);
+          - micro_wake_word.start:
+
+    - script.execute: set_idle_or_mute_phase
+    - script.execute: draw_display
+
+    # clear text sensors
+    - text_sensor.template.publish: { id: text_request,  state: "" }
+    - text_sensor.template.publish: { id: text_response, state: "" }
+
+
+  on_error:
+    - lambda: id(voice_assistant_phase) = id(voice_assist_error_phase_id);
+    - script.execute: draw_display
+    - delay: 1s
+    - script.execute: set_idle_or_mute_phase
+    - script.execute: draw_display
+
+  on_client_connected:
+    - lambda: id(init_in_progress) = false;
+    - script.execute: start_wake_word
+    - script.execute: set_idle_or_mute_phase
+    - script.execute: draw_display
+
+  on_client_disconnected:
+    - script.execute: stop_wake_word
+    - lambda: id(voice_assistant_phase) = id(voice_assist_not_ready_phase_id);
+    - script.execute: draw_display
+
+  # Optional: timer hooks (if you plan to surface timers on LVGL)
+  on_timer_started:
+    - script.execute: draw_display
+  on_timer_cancelled:
+    - script.execute: draw_display
+  on_timer_updated:
+    - script.execute: draw_display
+  on_timer_tick:
+    - script.execute: draw_display
+  on_timer_finished:
+    - media_player.speaker.play_on_device_media_file:
+        media_file: timer_finished_sound
+        announcement: true
+    - lambda: id(voice_assistant_phase) = id(voice_assist_timer_finished_phase_id);
+    - script.execute: draw_display
+
+# -----------------------------------------------------------------------------
+# MUTE SWITCH (software mute) + optional speaker enable
+# -----------------------------------------------------------------------------
+switch:
+  - platform: template
+    name: Mute
+    id: mute
+    icon: "mdi:microphone-off"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_off:
+      - microphone.unmute:
+      - script.execute: set_idle_or_mute_phase
+      - script.execute: draw_display
+    on_turn_on:
+      - microphone.mute:
+      - script.execute: set_idle_or_mute_phase
+      - script.execute: draw_display
+
+# -----------------------------------------------------------------------------
+# SELECT → choose wake word engine location (device vs HA streaming)
+# -----------------------------------------------------------------------------
+select:
+  - platform: template
+    entity_category: config
+    name: Wake word engine location
+    id: wake_word_engine_location
+    icon: "mdi:account-voice"
+    optimistic: true
+    restore_value: true
+    options:
+      - In Home Assistant
+      - On device
+    initial_option: On device
+
+    on_value:
+      # Wait until VA is either Muted or Idle before switching engines
+      - wait_until:
+          condition:
+            lambda: return id(voice_assistant_phase) == id(voice_assist_muted_phase_id) ||
+                            id(voice_assistant_phase) == id(voice_assist_idle_phase_id);
+
+      # Switch to HA streaming wake word
+      - if:
+          condition:
+            lambda: return x == "In Home Assistant";
+          then:
+            - micro_wake_word.stop
+            - delay: 500ms
+            - if:
+                condition:
+                  switch.is_off: mute
+                then:
+                  - lambda: id(va).set_use_wake_word(true);
+                  - voice_assistant.start_continuous:
+
+      # Switch to on-device micro wake word
+      - if:
+          condition:
+            lambda: return x == "On device";
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - voice_assistant.stop
+            - delay: 500ms
+            - if:
+                condition:
+                  switch.is_off: mute
+                then:
+                  - micro_wake_word.start
+
+
+# -----------------------------------------------------------------------------
+# SCRIPTS → start/stop wake word + phase helper
+# -----------------------------------------------------------------------------
+
+script:
+  - id: start_wake_word
+    then:
+      # Start on-device micro wake word when VA isn't already running
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - lambda: return id(wake_word_engine_location).state == "On device";
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - micro_wake_word.start:
+
+      # Start HA streaming wake word when VA isn't already running
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - lambda: return id(wake_word_engine_location).state == "In Home Assistant";
+          then:
+            - lambda: id(va).set_use_wake_word(true);
+            - voice_assistant.start_continuous:
+
+
+  # Stops either micro wake word or streaming wake word
+  - id: stop_wake_word
+    then:
+      - if:
+          condition:
+            lambda: return id(wake_word_engine_location).state == "In Home Assistant";
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - voice_assistant.stop:
+      - if:
+          condition:
+            lambda: return id(wake_word_engine_location).state == "On device";
+          then:
+            - micro_wake_word.stop:
+
+  # Set phase to idle/muted depending on software mute
+  - id: set_idle_or_mute_phase
+    then:
+      - if:
+          condition:
+            switch.is_off: mute
+          then:
+            - lambda: id(voice_assistant_phase) = id(voice_assist_idle_phase_id);
+          else:
+            - lambda: id(voice_assistant_phase) = id(voice_assist_muted_phase_id);
+
+  - id: draw_display
+    then:
+      # If still initializing, just show that
+      - if:
+          condition:
+            lambda: return id(init_in_progress);
+          then:
+            - lvgl.label.update:
+                id: va_phase_label
+                text: "Initializing..."
+            - lvgl.label.update:
+                id: va_status_label
+                text: ""
+            - lvgl.label.update:
+                id: va_request_label
+                text: ""
+            - lvgl.label.update:
+                id: va_response_label
+                text: ""
+            - script.execute: lvgl_apply_mute_style_if_needed
+            - lvgl.widget.redraw: va_phase_label
+            - lvgl.widget.redraw: va_status_label
+            - lvgl.widget.redraw: va_request_label
+            - lvgl.widget.redraw: va_response_label
+
+      # Not initializing: check connectivity and update accordingly
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - if:
+                condition:
+                  api.connected:
+                then:
+                  # Connected to HA: show phase + last request/response
+                  - lvgl.label.update:
+                      id: va_phase_label
+                      text: !lambda |-
+                        switch (id(voice_assistant_phase)) {
+                          case 1:  return "Idle";
+                          case 2:  return "Listening...";
+                          case 3:  return "Thinking...";
+                          case 4:  return "Replying...";
+                          case 10: return "Not ready";
+                          case 11: return "Error";
+                          case 12: return "Muted";
+                          case 20: return "Timer finished";
+                          default: return "Idle";
+                        }
+                  - lvgl.label.update:
+                      id: va_request_label
+                      text: !lambda return id(text_request).state.c_str();
+                  - lvgl.label.update:
+                      id: va_response_label
+                      text: !lambda return id(text_response).state.c_str();
+                  - lvgl.label.update:
+                      id: va_status_label
+                      text: "Wi‑Fi ✓  •  HA ✓"
+                  - script.execute: lvgl_apply_mute_style_if_needed
+                  - lvgl.widget.redraw: va_phase_label
+                  - lvgl.widget.redraw: va_request_label
+                  - lvgl.widget.redraw: va_response_label
+                  - lvgl.widget.redraw: va_status_label
+                else:
+                  # No HA: show status; clear request/response
+                  - lvgl.label.update:
+                      id: va_phase_label
+                      text: "No Home Assistant"
+                  - lvgl.label.update: { id: va_request_label,  text: "" }
+                  - lvgl.label.update: { id: va_response_label, text: "" }
+                  - lvgl.label.update:
+                      id: va_status_label
+                      text: "Wi‑Fi ✓  •  HA ✕"
+                  - script.execute: lvgl_apply_mute_style_if_needed
+                  - lvgl.widget.redraw: va_phase_label
+                  - lvgl.widget.redraw: va_request_label
+                  - lvgl.widget.redraw: va_response_label
+                  - lvgl.widget.redraw: va_status_label
+          else:
+            # No Wi‑Fi: show status; clear request/response
+            - lvgl.label.update:
+                id: va_phase_label
+                text: "No Wi‑Fi"
+            - lvgl.label.update: { id: va_request_label,  text: "" }
+            - lvgl.label.update: { id: va_response_label, text: "" }
+            - lvgl.label.update:
+                id: va_status_label
+                text: "Wi‑Fi ✕"
+            - script.execute: lvgl_apply_mute_style_if_needed
+            - lvgl.widget.redraw: va_phase_label
+            - lvgl.widget.redraw: va_request_label
+            - lvgl.widget.redraw: va_response_label
+            - lvgl.widget.redraw: va_status_label
+
+  # Helper: apply muted style dimming when the Mute switch is ON
+
+  - id: lvgl_apply_mute_style_if_needed
+    then:
+      - if:
+          condition:
+            switch.is_on: mute
+          then:
+            # Apply a dimmed look when muted
+            - lvgl.widget.update:
+                id: va_phase_label
+                bg_color: 0x444444     # dark gray background
+                text_color: 0xFFFFFF   # white text
+            - lvgl.widget.update:
+                id: va_request_label
+                bg_color: 0x444444
+                text_color: 0xFFFFFF
+            - lvgl.widget.update:
+                id: va_response_label
+                bg_color: 0x444444
+                text_color: 0xFFFFFF
+            - lvgl.widget.update:
+                id: va_status_label
+                bg_color: 0x444444
+                text_color: 0xFFFFFF
+          else:
+            # Restore normal look when unmuted (adjust to your theme)
+            - lvgl.widget.update:
+                id: va_phase_label
+                bg_color: 0x000000     # black (or your default)
+                text_color: 0xFFFFFF
+            - lvgl.widget.update:
+                id: va_request_label
+                bg_color: 0xFFFFFF     # white box to match box_style vibe
+                text_color: 0x000000
+            - lvgl.widget.update:
+                id: va_response_label
+                bg_color: 0xFFFFFF
+                text_color: 0x000000
+            - lvgl.widget.update:
+                id: va_status_label
+                bg_color: 0x000000
+                text_color: 0xFFFFFF
+
+
+
+
+
+pca9554:
+  - id: 'pca9554a_device'
+    address: 0x20
+
+output:
+  - platform: ledc
+    pin: GPIO5
+    id: backlight
+
+light:
+  - platform: monochromatic
+    output: backlight
+    name: "backlight Light" 
+    restore_mode: ALWAYS_ON
+
+spi:
+  id: display_qspi
+  type: quad
+  clk_pin: GPIO40
+  interface: spi2
+  data_pins: [GPIO46, GPIO45, GPIO42, GPIO41]
+
+display:
+  - platform: qspi_dbi
+    model: CUSTOM
+    rotation: 180
+    data_rate: 10MHz
+    id: main_display
+    spi_id: display_qspi
+    color_order: rgb
+    dimensions:
+      height: 412
+      width: 412     
+    cs_pin: GPIO21
+    reset_pin: 
+      pca9554: pca9554a_device
+      number: 1     
+    auto_clear_enabled: false #set to false for LVGL    
+    spi_mode: 0       
+    draw_rounding: 4 
+    #show_test_card: true  
+    init_sequence:
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0x36, 0x00]
+      - [ 0x3A, 0x55]
+      - [ 0xFF, 0x20, 0x10, 0x10]
+      - [ 0x0C, 0x11]
+      - [ 0x10, 0x02]
+      - [ 0x11, 0x11]
+      - [ 0x15, 0x42]
+      - [ 0x16, 0x11]
+      - [ 0x1A, 0x02]
+      - [ 0x1B, 0x11]
+      - [ 0x61, 0x80]
+      - [ 0x62, 0x80]
+      - [ 0x54, 0x44]
+      - [ 0x58, 0x88]
+      - [ 0x5C, 0xcc]
+      - [ 0xFF, 0x20, 0x10, 0x10]
+      - [ 0x20, 0x80]
+      - [ 0x21, 0x81]
+      - [ 0x22, 0x31]
+      - [ 0x23, 0x20]
+      - [ 0x24, 0x11]
+      - [ 0x25, 0x11]
+      - [ 0x26, 0x12]
+      - [ 0x27, 0x12]
+      - [ 0x30, 0x80]
+      - [ 0x31, 0x81]
+      - [ 0x32, 0x31]
+      - [ 0x33, 0x20]
+      - [ 0x34, 0x11]
+      - [ 0x35, 0x11]
+      - [ 0x36, 0x12]
+      - [ 0x37, 0x12]
+      - [ 0xFF, 0x20, 0x10, 0x10]
+      - [ 0x41, 0x11]
+      - [ 0x42, 0x22]
+      - [ 0x43, 0x33]
+      - [ 0x49, 0x11]
+      - [ 0x4A, 0x22]
+      - [ 0x4B, 0x33]
+      - [ 0xFF, 0x20, 0x10, 0x15]
+      - [ 0x00, 0x00]
+      - [ 0x01, 0x00]
+      - [ 0x02, 0x00]
+      - [ 0x03, 0x00]
+      - [ 0x04, 0x10]
+      - [ 0x05, 0x0C]
+      - [ 0x06, 0x23]
+      - [ 0x07, 0x22]
+      - [ 0x08, 0x21]
+      - [ 0x09, 0x20]
+      - [ 0x0A, 0x33]
+      - [ 0x0B, 0x32]
+      - [ 0x0C, 0x34]
+      - [ 0x0D, 0x35]
+      - [ 0x0E, 0x01]
+      - [ 0x0F, 0x01]
+      - [ 0x20, 0x00]
+      - [ 0x21, 0x00]
+      - [ 0x22, 0x00]
+      - [ 0x23, 0x00]
+      - [ 0x24, 0x0C]
+      - [ 0x25, 0x10]
+      - [ 0x26, 0x20]
+      - [ 0x27, 0x21]
+      - [ 0x28, 0x22]
+      - [ 0x29, 0x23]
+      - [ 0x2A, 0x33]
+      - [ 0x2B, 0x32]
+      - [ 0x2C, 0x34]
+      - [ 0x2D, 0x35]
+      - [ 0x2E, 0x01]
+      - [ 0x2F, 0x01]
+      - [ 0xFF, 0x20, 0x10, 0x16]
+      - [ 0x00, 0x00]
+      - [ 0x01, 0x00]
+      - [ 0x02, 0x00]
+      - [ 0x03, 0x00]
+      - [ 0x04, 0x08]
+      - [ 0x05, 0x04]
+      - [ 0x06, 0x19]
+      - [ 0x07, 0x18]
+      - [ 0x08, 0x17]
+      - [ 0x09, 0x16]
+      - [ 0x0A, 0x33]
+      - [ 0x0B, 0x32]
+      - [ 0x0C, 0x34]
+      - [ 0x0D, 0x35]
+      - [ 0x0E, 0x01]
+      - [ 0x0F, 0x01]
+      - [ 0x20, 0x00]
+      - [ 0x21, 0x00]
+      - [ 0x22, 0x00]
+      - [ 0x23, 0x00]
+      - [ 0x24, 0x04]
+      - [ 0x25, 0x08]
+      - [ 0x26, 0x16]
+      - [ 0x27, 0x17]
+      - [ 0x28, 0x18]
+      - [ 0x29, 0x19]
+      - [ 0x2A, 0x33]
+      - [ 0x2B, 0x32]
+      - [ 0x2C, 0x34]
+      - [ 0x2D, 0x35]
+      - [ 0x2E, 0x01]
+      - [ 0x2F, 0x01]
+      - [ 0xFF, 0x20, 0x10, 0x12]
+      - [ 0x00, 0x99]
+      - [ 0x2A, 0x28]
+      - [ 0x2B, 0x0f]
+      - [ 0x2C, 0x16]
+      - [ 0x2D, 0x28]
+      - [ 0x2E, 0x0f]
+      - [ 0xFF, 0x20, 0x10, 0xA0]
+      - [ 0x08, 0xdc]
+      - [ 0xFF, 0x20, 0x10, 0x45]
+      - [ 0x01, 0x9C]
+      - [ 0x03, 0x9C]
+      - [ 0xFF, 0x20, 0x10, 0x42]
+      - [ 0x05, 0x2c]
+      - [ 0xFF, 0x20, 0x10, 0x11]
+      - [ 0x50, 0x01]
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0x2A, 0x00, 0x00, 0x01, 0x9B]
+      - [ 0x2B, 0x00, 0x00, 0x01, 0x9B]
+      - [ 0xFF, 0x20, 0x10, 0x40]
+      - [ 0x86, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x12]
+      - [ 0x0D, 0x66]
+      - [ 0xFF, 0x20, 0x10, 0x17]
+      - [ 0x39, 0x3c]
+      - [ 0xff, 0x20, 0x10, 0x31]
+      - [ 0x38, 0x03]
+      - [ 0x39, 0xf0]
+      - [ 0x36, 0x03]
+      - [ 0x37, 0xe8]
+      - [ 0x34, 0x03]
+      - [ 0x35, 0xCF]
+      - [ 0x32, 0x03]
+      - [ 0x33, 0xBA]
+      - [ 0x30, 0x03]
+      - [ 0x31, 0xA2]
+      - [ 0x2e, 0x03]
+      - [ 0x2f, 0x95]
+      - [ 0x2c, 0x03]
+      - [ 0x2d, 0x7e]
+      - [ 0x2a, 0x03]
+      - [ 0x2b, 0x62]
+      - [ 0x28, 0x03]
+      - [ 0x29, 0x44]
+      - [ 0x26, 0x02]
+      - [ 0x27, 0xfc]
+      - [ 0x24, 0x02]
+      - [ 0x25, 0xd0]
+      - [ 0x22, 0x02]
+      - [ 0x23, 0x98]
+      - [ 0x20, 0x02]
+      - [ 0x21, 0x6f]
+      - [ 0x1e, 0x02]
+      - [ 0x1f, 0x32]
+      - [ 0x1c, 0x01]
+      - [ 0x1d, 0xf6]
+      - [ 0x1a, 0x01]
+      - [ 0x1b, 0xb8]
+      - [ 0x18, 0x01]
+      - [ 0x19, 0x6E]
+      - [ 0x16, 0x01]
+      - [ 0x17, 0x41]
+      - [ 0x14, 0x00]
+      - [ 0x15, 0xfd]
+      - [ 0x12, 0x00]
+      - [ 0x13, 0xCf]
+      - [ 0x10, 0x00]
+      - [ 0x11, 0x98]
+      - [ 0x0e, 0x00]
+      - [ 0x0f, 0x89]
+      - [ 0x0c, 0x00]
+      - [ 0x0d, 0x79]
+      - [ 0x0a, 0x00]
+      - [ 0x0b, 0x67]
+      - [ 0x08, 0x00]
+      - [ 0x09, 0x55]
+      - [ 0x06, 0x00]
+      - [ 0x07, 0x3F]
+      - [ 0x04, 0x00]
+      - [ 0x05, 0x28]
+      - [ 0x02, 0x00]
+      - [ 0x03, 0x0E]
+      - [ 0xff, 0x20, 0x10, 0x00]
+      - [ 0xff, 0x20, 0x10, 0x32]
+      - [ 0x38, 0x03]
+      - [ 0x39, 0xf0]
+      - [ 0x36, 0x03]
+      - [ 0x37, 0xe8]
+      - [ 0x34, 0x03]
+      - [ 0x35, 0xCF]
+      - [ 0x32, 0x03]
+      - [ 0x33, 0xBA]
+      - [ 0x30, 0x03]
+      - [ 0x31, 0xA2]
+      - [ 0x2e, 0x03]
+      - [ 0x2f, 0x95]
+      - [ 0x2c, 0x03]
+      - [ 0x2d, 0x7e]
+      - [ 0x2a, 0x03]
+      - [ 0x2b, 0x62]
+      - [ 0x28, 0x03]
+      - [ 0x29, 0x44]
+      - [ 0x26, 0x02]
+      - [ 0x27, 0xfc]
+      - [ 0x24, 0x02]
+      - [ 0x25, 0xd0]
+      - [ 0x22, 0x02]
+      - [ 0x23, 0x98]
+      - [ 0x20, 0x02]
+      - [ 0x21, 0x6f]
+      - [ 0x1e, 0x02]
+      - [ 0x1f, 0x32]
+      - [ 0x1c, 0x01]
+      - [ 0x1d, 0xf6]
+      - [ 0x1a, 0x01]
+      - [ 0x1b, 0xb8]
+      - [ 0x18, 0x01]
+      - [ 0x19, 0x6E]
+      - [ 0x16, 0x01]
+      - [ 0x17, 0x41]
+      - [ 0x14, 0x00]
+      - [ 0x15, 0xfd]
+      - [ 0x12, 0x00]
+      - [ 0x13, 0xCf]
+      - [ 0x10, 0x00]
+      - [ 0x11, 0x98]
+      - [ 0x0e, 0x00]
+      - [ 0x0f, 0x89]
+      - [ 0x0c, 0x00]
+      - [ 0x0d, 0x79]
+      - [ 0x0a, 0x00]
+      - [ 0x0b, 0x67]
+      - [ 0x08, 0x00]
+      - [ 0x09, 0x55]
+      - [ 0x06, 0x00]
+      - [ 0x07, 0x3F]
+      - [ 0x04, 0x00]
+      - [ 0x05, 0x28]
+      - [ 0x02, 0x00]
+      - [ 0x03, 0x0E]
+      - [ 0xff, 0x20, 0x10, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x11]
+      - [ 0x60, 0x01]
+      - [ 0x65, 0x03]
+      - [ 0x66, 0x38]
+      - [ 0x67, 0x04]
+      - [ 0x68, 0x34]
+      - [ 0x69, 0x03]
+      - [ 0x61, 0x03]
+      - [ 0x62, 0x38]
+      - [ 0x63, 0x04]
+      - [ 0x64, 0x34]
+      - [ 0x0A, 0x11]
+      - [ 0x0B, 0x20]
+      - [ 0x0c, 0x20]
+      - [ 0x55, 0x06]
+      - [ 0xFF, 0x20, 0x10, 0x42]
+      - [ 0x05, 0x3D]
+      - [ 0x06, 0x03]
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x12]
+      - [ 0x1F, 0xDC]
+      - [ 0xff, 0x20, 0x10, 0x17]
+      - [ 0x11, 0xAA]
+      - [ 0x16, 0x12]
+      - [ 0x0B, 0xC3]
+      - [ 0x10, 0x0E]
+      - [ 0x14, 0xAA]
+      - [ 0x18, 0xA0]
+      - [ 0x1A, 0x80]
+      - [ 0x1F, 0x80]
+      - [ 0xff, 0x20, 0x10, 0x11]
+      - [ 0x30, 0xEE]
+      - [ 0xff, 0x20, 0x10, 0x12]
+      - [ 0x15, 0x0F]
+      - [ 0xff, 0x20, 0x10, 0x2D]
+      - [ 0x01, 0x3E]
+      - [ 0xff, 0x20, 0x10, 0x40]
+      - [ 0x83, 0xC4]
+      - [ 0xFF, 0x20, 0x10, 0x12]
+      - [ 0x00, 0xCC]
+      - [ 0x36, 0xA0]
+      - [ 0x2A, 0x2D]
+      - [ 0x2B, 0x1e]
+      - [ 0x2C, 0x26]
+      - [ 0x2D, 0x2D]
+      - [ 0x2E, 0x1e]
+      - [ 0x1F, 0xE6]
+      - [ 0xFF, 0x20, 0x10, 0xA0]
+      - [ 0x08, 0xE6]
+      - [ 0xFF, 0x20, 0x10, 0x12]
+      - [ 0x10, 0x0F]
+      - [ 0xFF, 0x20, 0x10, 0x18]
+      - [ 0x01, 0x01]
+      - [ 0x00, 0x1E]
+      - [ 0xFF, 0x20, 0x10, 0x43]
+      - [ 0x03, 0x04]
+      - [ 0xFF, 0x20, 0x10, 0x18]
+      - [ 0x3A, 0x01]
+      - [ 0xFF, 0x20, 0x10, 0x50]
+      - [ 0x05, 0x08]
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x50]
+      - [ 0x00, 0xA6]
+      - [ 0x01, 0xA6]
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x50]
+      - [ 0x08, 0x55]
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x10]
+      - [ 0x0B, 0x43]
+      - [ 0x0C, 0x12]
+      - [ 0x10, 0x01]
+      - [ 0x11, 0x12]
+      - [ 0x15, 0x00]
+      - [ 0x16, 0x00]
+      - [ 0x1A, 0x00]
+      - [ 0x1B, 0x00]
+      - [ 0x61, 0x00]
+      - [ 0x62, 0x00]
+      - [ 0x51, 0x11]
+      - [ 0x55, 0x55]
+      - [ 0x58, 0x00]
+      - [ 0x5C, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x10]
+      - [ 0x20, 0x81]
+      - [ 0x21, 0x82]
+      - [ 0x22, 0x72]
+      - [ 0x30, 0x00]
+      - [ 0x31, 0x00]
+      - [ 0x32, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x10]
+      - [ 0x44, 0x44]
+      - [ 0x45, 0x55]
+      - [ 0x46, 0x66]
+      - [ 0x47, 0x77]
+      - [ 0x49, 0x00]
+      - [ 0x4A, 0x00]
+      - [ 0x4B, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x17]
+      - [ 0x37, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x15]
+      - [ 0x04, 0x08]
+      - [ 0x05, 0x04]
+      - [ 0x06, 0x1C]
+      - [ 0x07, 0x1A]
+      - [ 0x08, 0x18]
+      - [ 0x09, 0x16]
+      - [ 0x24, 0x05]
+      - [ 0x25, 0x09]
+      - [ 0x26, 0x17]
+      - [ 0x27, 0x19]
+      - [ 0x28, 0x1B]
+      - [ 0x29, 0x1D]
+      - [ 0xFF, 0x20, 0x10, 0x16]
+      - [ 0x04, 0x09]
+      - [ 0x05, 0x05]
+      - [ 0x06, 0x1D]
+      - [ 0x07, 0x1B]
+      - [ 0x08, 0x19]
+      - [ 0x09, 0x17]
+      - [ 0x24, 0x04]
+      - [ 0x25, 0x08]
+      - [ 0x26, 0x16]
+      - [ 0x27, 0x18]
+      - [ 0x28, 0x1A]
+      - [ 0x29, 0x1C]
+      - [ 0xFF, 0x20, 0x10, 0x18]
+      - [ 0x1F, 0x02]
+      - [ 0xFF, 0x20, 0x10, 0x11]
+      - [ 0x15, 0x99]
+      - [ 0x16, 0x99]
+      - [ 0x1C, 0x88]
+      - [ 0x1D, 0x88]
+      - [ 0x1E, 0x88]
+      - [ 0x13, 0xf0]
+      - [ 0x14, 0x34]
+      - [ 0xFF, 0x20, 0x10, 0x12]
+      - [ 0x12, 0x89]
+      - [ 0x06, 0x06]
+      - [ 0x18, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x11]
+      - [ 0x0A, 0x00]
+      - [ 0x0B, 0xF0]
+      - [ 0x0c, 0xF0]
+      - [ 0x6A, 0x10]
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x11]
+      - [ 0x08, 0x70]
+      - [ 0x09, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0x35, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x12]
+      - [ 0x21, 0x70]
+      - [ 0xFF, 0x20, 0x10, 0x2D]
+      - [ 0x02, 0x00]
+      - [ 0xFF, 0x20, 0x10, 0x00]
+      - [ 0x11, 0x00]      
+      - delay 120ms
+lvgl:
+  displays: main_display
+  buffer_size: 100%
+  widgets:
+    - label:
+        id: test_label
+        align: CENTER
+        text: "Hello Frank!"
+        text_font: montserrat_24
+        y: -20
+
+    - label:
+        id: va_phase_label
+        align: CENTER
+        y: -160
+        text: "Initializing..."
+        text_font: montserrat_20
+
+    # Request box (middle)
+    - label:
+        id: va_request_label
+        align: CENTER
+        y: -100
+        text: ""
+        text_font: montserrat_18
+        styles: [box_style]
+
+    # Response box (bottom)
+    - label:
+        id: va_response_label
+        align: CENTER
+        y: 140
+        text: ""
+        text_font: montserrat_18
+        styles: [box_style]
+
+    # Optional: a thin status line to show Wi‑Fi / HA status
+    - label:
+        id: va_status_label
+        align: CENTER
+        y: 190
+        text: ""
+        text_font: montserrat_16
+
+##below are used to show home assistant value:
+  style_definitions:
+    # ── white box with black border (used for request / response) ──
+    - id: box_style
+      border_color: "000000"
+      border_width: 2
+      pad_all: 6
+      radius: 4
+      text_color: "000000"
+
+    # a dimmed style for muted page ──
+    - id: muted_bg_style
+      bg_color: "444444"
+
+
+# -----------------------------------------------------------------------------
+# TEXT SENSORS → last request/response (easy to show on LVGL)
+# -----------------------------------------------------------------------------
+text_sensor:
+  - platform: template
+    id: text_request
+    on_value:
+      # truncate to ~32 chars like S3 Box 3 to fit compact UI          # [1](https://melbournecityit-my.sharepoint.com/personal/info_melbournecityit_com_au/Documents/Microsoft%20Copilot%20Chat%20Files/esp32-s3-box-3.yaml)
+      - lambda: |-
+          if (id(text_request).state.length() > 32) {
+            std::string s = id(text_request).state.c_str();
+            std::string t = esphome::str_truncate(s.c_str(), 31);
+            id(text_request).state = (t + "...").c_str();
+          }
+  - platform: template
+    id: text_response
+    on_value:
+      - lambda: |-
+          if (id(text_response).state.length() > 32) {
+            std::string s = id(text_response).state.c_str();
+            std::string t = esphome::str_truncate(s.c_str(), 31);
+            id(text_response).state = (t + "...").c_str();
+          }
+
+# -----------------------------------------------------------------------------
+# GLOBALS → phase tracking + init flag + IDs for phases
+# -----------------------------------------------------------------------------
+globals:
+  - id: init_in_progress
+    type: bool
+    restore_value: "false"
+    initial_value: "true"
+
+
+  # Phase IDs (matches S3 Box 3 semantics)
+  - id: voice_assist_idle_phase_id
+    type: int
+    initial_value: "1"
+  - id: voice_assist_listening_phase_id
+    type: int
+    initial_value: "2"
+  - id: voice_assist_thinking_phase_id
+    type: int
+    initial_value: "3"
+  - id: voice_assist_replying_phase_id
+    type: int
+    initial_value: "4"
+  - id: voice_assist_not_ready_phase_id
+    type: int
+    initial_value: "10"
+  - id: voice_assist_error_phase_id
+    type: int
+    initial_value: "11"
+  - id: voice_assist_muted_phase_id
+    type: int
+    initial_value: "12"
+  - id: voice_assist_timer_finished_phase_id
+    type: int
+    initial_value: "20"
+  - id: voice_assistant_phase
+    type: int
+    restore_value: false
+    initial_value: "10"
