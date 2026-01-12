@@ -1,15 +1,22 @@
-# v1.1 Removing request text
+# v1.1 Removing request text, added bg image. added power meter reading.
+# avoid screen swap when Voice assistant, or timer is active.
+# Response and shopping list scroll when content is longer than it's label size
+---
+substitutions:
+  bg_img: /config/esphome/images/default/waveshare_bg_tp420.jpg
+  wifi_name: "Waveshare-146-Va"
+
 esphome:
   name: waveshare-146-va
   friendly_name: waveshare 146 va 1.1
+
   on_boot:
     priority: 600
     then:
+      # Give some time for API connection & time sync & voice assistant init
+      - delay: 15s
+      - text_sensor.template.publish: { id: text_response, state: "Say Hey Jarvis!" }
       - script.execute: draw_display
-      - delay: 5s
-      - lvgl.widget.update:
-          id: timer_progress_arc
-          hidden: true
 esp32:
   board: esp32-s3-devkitc-1
   variant: esp32s3
@@ -38,6 +45,16 @@ api:
   encryption:
     key: "/NRi8kWEuodQFhY40a8yvujDUELH0yhZIOTECv81wU0="
 
+  on_client_connected:
+    then:
+      - delay: 1.5s
+      - script.execute: update_timer_progress_arc
+      - text_sensor.template.publish: { id: text_response, state: "Say Hey Jarvis!" }
+      - script.execute: draw_display
+#used to check free ram, cpu.
+debug:
+  update_interval: 15s
+
 ota:
   - platform: esphome
     password: "1554a3a8fd1fa8d97307d74f21aa9fde"
@@ -64,28 +81,90 @@ time:
         seconds: 0
         then:
           - switch.turn_off: switch_antiburn
+  #used for clock page
+  - platform: homeassistant
+    id: time_comp
+    on_time_sync:
+      - script.execute: time_update
+    on_time:
+      - minutes: '*'
+        seconds: 0
+        then:
+          - script.execute: time_update
+
+      - seconds: '*'
+        then:
+          - lvgl.indicator.update:
+              id: second_hand
+              value: !lambda |-
+                return id(time_comp).now().second;
+  #used for page swap
+  - platform: sntp
+    id: sntp_time
+    on_time:
+      - seconds: 0
+        then:
+          - if:
+              condition:
+                or:
+                  - voice_assistant.is_running
+              then:
+                - logger.log: "Skipping page swap (voice assistant or timer running)"
+              else:
+                - logger.log: "Switching to clock_page for 6 seconds"
+                - lvgl.page.next:
+                    #id: clock_page
+                    time: 1s
+                    animation: OUT_LEFT
+
+                - delay: 5s
+
+                - logger.log: "Returning to main_page"
+                - lvgl.page.previous:
+                    #id: main_page
+                    time: 1s
+                    animation: OUT_RIGHT
+
+
 interval:
-  - interval: 5s
+  - interval: 60s
     then:
       - if:
           condition:
             and:
+              # 1) no current conversation
               - not:
                   voice_assistant.is_running:
+
+              # 2) At least 2min since the last TTS playback
               - lambda: |-
-                  return (millis() - id(last_tts_ms)) > 60000;
+                  return (millis() - id(last_tts_ms)) > 120000;
+
+              # 3) We iterate voice assistant timers and ensure none is active.
+              - lambda: |-
+                  const auto timers = id(va).get_timers();
+                  for (auto &kv : timers) {
+                    const auto &t = kv.second;
+                    if (t.is_active && t.seconds_left > 0) {
+                      return false; 
+                    }
+                  }
+                  return true;         // no active timers => OK to dim
+              
+              # 4) Only dim if current brightness is not already ~30%
+              - lambda: |-
+                  const float b = id(screen_backlight).current_values.get_brightness();
+                  // Use a tolerance of +/- 1% to account for float rounding
+                  return fabsf(b - 0.30f) > 0.01f;
+
           then:
-          # dim off screen
+              # Dim off screen (only when all 4 are true)
             - light.turn_on:
                 id: screen_backlight
-                brightness: 20%
-          else:
-          # Show shopping list when not in idle timeout
-            - lvgl.widget.update:
-                id: shopping_label
-                hidden: false
+                brightness: 30%
 
-  - interval: 500ms
+
+  - interval: 1s
     then:
       - if:
           condition:
@@ -100,11 +179,18 @@ interval:
                 then:
                   - lvgl.label.update:
                       id: va_phase_label
-                      text_opa: 100%
+                      text_opa: 90%
+                  - lvgl.label.update:
+                      id: va_phase_label_clock
+                      text_opa: 90%
                 else:
                   - lvgl.label.update:
                       id: va_phase_label
-                      text_opa: 0%
+                      text_opa: 10%
+                  - lvgl.label.update:
+                      id: va_phase_label_clock
+                      text_opa: 10%
+      - script.execute: update_timer_progress_arc
 
 
 psram:
@@ -144,6 +230,7 @@ speaker:
     i2s_dout_pin: GPIO47
     dac_type: external
     channel: stereo
+    buffer_duration: 600ms #default 500ms
     
 i2c:
   sda: GPIO11
@@ -161,6 +248,8 @@ media_player:
     name: None
     volume_min: 0.5
     volume_max: 1
+    volume_initial: 0.8
+    task_stack_in_psram: true
     announcement_pipeline:
       speaker: i2s_audio_speaker
       format: FLAC
@@ -197,9 +286,7 @@ media_player:
             - script.execute: set_idle_or_mute_phase
             - script.execute: draw_display
 
-# -----------------------------------------------------------------------------
-# ON-DEVICE MICRO WAKE WORD → same models as S3 Box 3
-# -----------------------------------------------------------------------------
+
 micro_wake_word:
   id: mww
   models:
@@ -210,19 +297,15 @@ micro_wake_word:
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
 
-# -----------------------------------------------------------------------------
-# VOICE ASSISTANT CORE
-# -----------------------------------------------------------------------------
 voice_assistant:
   id: va
-  microphone: i2s_microphone         # <-- your mic id
-  media_player: speaker_media_player  # <-- the media_player above
+  microphone: i2s_microphone
+  media_player: speaker_media_player
   micro_wake_word: mww
 
-  # Audio tuning (same as S3 Box 3 baseline)  
-  noise_suppression_level: 3
+  noise_suppression_level: 1
   auto_gain: 31dBFS
-  volume_multiplier: 3.0
+  volume_multiplier: 4.0
 
   # UI hooks (update request/response + phases)
   on_listening:
@@ -246,11 +329,12 @@ voice_assistant:
     - lvgl.widget.update:
         id: va_phase_label
         text_opa: 100%
-
+    - lvgl.widget.update:
+        id: va_phase_label_clock
+        text_opa: 100%     
   on_stt_vad_end:
     - lambda: id(voice_assistant_phase) = id(voice_assist_thinking_phase_id);
     - script.execute: draw_display
-
 
   on_tts_start:
     - text_sensor.template.publish:
@@ -264,7 +348,7 @@ voice_assistant:
     - wait_until:
         condition:
           media_player.is_announcing:
-        timeout: 0.5s
+        timeout: 1.5s
     
     - lambda: 'id(last_tts_ms) = millis();'
     # keep your existing on_end actions (wait_until, set_idle_or_mute_phase, draw_display, etc.)
@@ -278,7 +362,6 @@ voice_assistant:
             - not:
                 speaker.is_playing:
 
-    # restart on-device wake word only if "On device"
     - if:
         condition:
           lambda: return id(wake_word_engine_location).state == "On device";
@@ -287,11 +370,13 @@ voice_assistant:
           - micro_wake_word.start:
 
     - script.execute: set_idle_or_mute_phase
-    - script.execute: draw_display
 
     # clear text sensors
-    - text_sensor.template.publish: { id: text_response, state: "" }
-    
+    - text_sensor.template.publish: { id: text_response, state: "Say Hey Jarvis!" }
+    - lvgl.label.update:
+        id: va_response_label
+        text: "Say Hey Jarvis!"
+        text_opa: 100%
     #restore the phase text style
     - lambda: |-
         id(va_blinking) = false;
@@ -300,9 +385,8 @@ voice_assistant:
         id: va_phase_label
         text: "Idle"
         text_opa: 100%
-
-
-
+    - script.execute: draw_display
+  # End of On_end  
   on_error:
     - lambda: id(voice_assistant_phase) = id(voice_assist_error_phase_id);
     - script.execute: draw_display
@@ -328,6 +412,9 @@ voice_assistant:
     - light.turn_on:
         id: screen_backlight
         brightness: 80%
+    - lvgl.widget.update:
+        id: timer_progress_arc
+        hidden: false
   on_timer_cancelled:
     - script.execute: update_timer_progress_arc
     - script.execute: draw_display
@@ -340,9 +427,10 @@ voice_assistant:
   on_timer_tick:
     - script.execute: update_timer_progress_arc
     - script.execute: draw_display
+    - text_sensor.template.publish: { id: text_response, state: "" }
   on_timer_finished:
     - script.execute: update_timer_progress_arc
-    - script.execute: ring_timer_10x
+    - script.execute: ring_timer_8x
     - lambda: id(voice_assistant_phase) = id(voice_assist_timer_finished_phase_id);
     - script.execute: draw_display
     - lvgl.widget.update:
@@ -522,6 +610,7 @@ script:
             - lvgl.widget.redraw: va_phase_label
             - lvgl.widget.redraw: va_status_label
             - lvgl.widget.redraw: va_response_label
+            
 
       # Not initializing: check connectivity and update accordingly
       - if:
@@ -547,36 +636,55 @@ script:
                           case 20: return "Timer finished";
                           default: return "Idle";
                         }
-
+                  #va_phase_label_clock
+                  - lvgl.label.update:
+                      id: va_phase_label_clock
+                      text: !lambda |-
+                        switch (id(voice_assistant_phase)) {
+                          case 1:  return "Idle";
+                          case 2:  return "Listening...";
+                          case 3:  return "Thinking...";
+                          case 4:  return "Replying...";
+                          case 10: return "Not ready";
+                          case 11: return "Error";
+                          case 12: return "Muted";
+                          case 20: return "Timer finished";
+                          default: return "Idle";
+                        }
                   - lvgl.label.update:
                       id: va_response_label
                       text: !lambda return id(text_response).state.c_str();
+                      text_color: white
                   - lvgl.label.update:
                       id: va_status_label
                       # Wifi Good, HA good
-                      text: "\U000F16BD  •  \U000F07D1"
+                      text: "\U000F16BD \U000F07D1"
                       text_font: roboto_icons_25
                       text_color: green
                   - script.execute: lvgl_apply_mute_style_if_needed
                   - lvgl.widget.redraw: va_phase_label
                   - lvgl.widget.redraw: va_response_label
                   - lvgl.widget.redraw: va_status_label
+                  - lvgl.widget.redraw: timer_progress_arc
+                  - lvgl.widget.redraw: timer_progress_text
                 else:
                   # No HA: show status; clear response
                   - lvgl.label.update:
                       id: va_phase_label
                       text: "No HA"
-                  - lvgl.label.update: { id: va_response_label, text: "" }
+                  - lvgl.label.update: { id: va_response_label, text: "Connect to wifi name ${wifi_name}, and reconnect to your home wifi" }
                   - lvgl.label.update:
                       id: va_status_label
                       # Wifi Good, No HA
-                      text: "\U000F16BD •  \U000F1A35"
+                      text: "\U000F16BD \U000F1A35"
                       text_font: roboto_icons_25
                       text_color: red
                   - script.execute: lvgl_apply_mute_style_if_needed
                   - lvgl.widget.redraw: va_phase_label
                   - lvgl.widget.redraw: va_response_label
                   - lvgl.widget.redraw: va_status_label
+                  - lvgl.widget.redraw: timer_progress_arc
+                  - lvgl.widget.redraw: timer_progress_text
           else:
             # No Wi‑Fi: show status; clear response
             - lvgl.label.update:
@@ -588,6 +696,8 @@ script:
             - lvgl.widget.redraw: va_phase_label
             - lvgl.widget.redraw: va_response_label
             - lvgl.widget.redraw: va_status_label
+            - lvgl.widget.redraw: timer_progress_arc
+            - lvgl.widget.redraw: timer_progress_text
 
   # Helper: apply muted style dimming when the Mute switch is ON
 
@@ -600,28 +710,24 @@ script:
             # Apply a dimmed look when muted
             - lvgl.widget.update:
                 id: va_phase_label
-                bg_color: 0x444444     # dark gray background
-                text_color: 0x381e7a   # dark blue
+                text_color: red  
 
             - lvgl.widget.update:
                 id: va_response_label
-                bg_color: 0x444444
-                text_color: 0x000000
+                text_color: 0xFFFFFF
 
           else:
             # Restore normal look when unmuted (adjust to your theme)
             - lvgl.widget.update:
                 id: va_phase_label
-                bg_color: 0xFFFFFF
-                text_color: 0x381e7a
+                text_color: yellow
 
             - lvgl.widget.update:
                 id: va_response_label
-                bg_color: 0xFFFFFF
-                text_color: 0x000000
+                text_color: 0xFFFFFF
 
 
-  - id: ring_timer_10x
+  - id: ring_timer_8x
     mode: queued
     then:
       - repeat:
@@ -643,7 +749,7 @@ script:
                       media_player.is_announcing:
                 timeout: 10s
 
-            # Small gap between repeats (tweak if needed)
+            # Small gap between repeats
             - delay: 300ms
 
   - id: update_timer_progress_arc
@@ -685,10 +791,12 @@ script:
             if (pct > 100) pct = 100;
           }
 
+          // Store results for later updates
           id(timer_progress_percent) = pct;
           id(timer_progress_has_timer) = has_any;
+          id(timer_progress_seconds_left) = has_any ? (int) chosen.seconds_left : 0;
 
-      # Show & update arc when a timer is present
+      # Show & update arc + text when a timer is present
       - if:
           condition:
             lambda: 'return id(timer_progress_has_timer);'
@@ -699,11 +807,67 @@ script:
             - lvgl.arc.update:
                 id: timer_progress_arc
                 value: !lambda 'return id(timer_progress_percent);'
+
+            # Update the center label text: HH:MM:SS if >=1h, else MM:SS
+            - lvgl.label.update:
+                id: timer_progress_text
+                text: !lambda |-
+                  int sec = id(timer_progress_seconds_left);
+                  char buf[16];
+                  if (sec >= 3600) {
+                    int h = sec / 3600;
+                    int m = (sec % 3600) / 60;
+                    int s = sec % 60;
+                    snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, s);
+                  } else {
+                    int m = sec / 60;
+                    int s = sec % 60;
+                    snprintf(buf, sizeof(buf), "%02d:%02d", m, s);
+                  }
+                  return std::string(buf);
+            - lvgl.widget.update:
+                id: timer_progress_text
+                hidden: false
+
           else:
             - lvgl.widget.update:
                 id: timer_progress_arc
                 hidden: true
+            - lvgl.widget.update:
+                id: timer_progress_text
+                hidden: true
+  # analog clock update
+  - id: time_update
+    then:
+      - lvgl.indicator.update:
+          id: minute_hand
+          value: !lambda |-
+            return id(time_comp).now().minute;
+      - lvgl.indicator.update:
+          id: hour_hand
+          value: !lambda |-
+            auto now = id(time_comp).now();
+            return std::fmod(now.hour, 12) * 60 + now.minute;
+      #update seconds
+      - lvgl.indicator.update:
+          id: second_hand
+          value: !lambda |-
+            return id(time_comp).now().second;
 
+      - lvgl.label.update:
+          id: date_label
+          text: !lambda |-
+            static const char * const mon_names[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                                     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+            static char date_buf[8];
+            auto now = id(time_comp).now();
+            snprintf(date_buf, sizeof(date_buf), "%s %2d", mon_names[now.month-1], now.day_of_month);
+            return date_buf;
+      - lvgl.label.update:
+          id: day_label
+          text: !lambda |-
+            static const char * const day_names[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+            return day_names[id(time_comp).now().day_of_week - 1];  
 
 
 pca9554:
@@ -1157,101 +1321,245 @@ display:
 lvgl:
   displays: main_display
   buffer_size: 100%
-  widgets:
-    # Status line to show Wi‑Fi / HA status
-    - label:
-        id: va_status_label
-        align: CENTER
-        y: -190
-        text: ""
-        text_font: montserrat_16
 
-    - label:
-        id: va_phase_label
-        align: CENTER
-        y: -160
-        text: "Initializing..."
-        text_font: montserrat_20
+  pages:
+    - id: main_page
+      bg_image_src: round_bg
+      bg_image_opa: COVER
+      bg_opa: transp
+      widgets:
+        # Status line to show Wi‑Fi / HA status
+        - label:
+            id: va_status_label
+            align: CENTER
+            x: -20
+            y: -190
+            text: ""
+            text_font: montserrat_16
 
-    # Orange divider line under the label
-    - obj:
-        id: va_status_divider
-        align: CENTER
-        y: -137
-        width: 70%
-        height: 2        # line thickness
-        radius: 0
-        bg_color: 0xFFA500   # orange
-        bg_opa: 100%
+        - label:
+            id: wifi_db_label
+            align: CENTER
+            x: 37
+            y: -190
+            text: "--%"
+            text_color: 0xffffff
+            text_font: montserrat_20
 
+        - label:
+            id: va_phase_label
+            align: CENTER
+            y: -160
+            text: "Initializing..."
+            text_font: montserrat_20
+            text_color: 0xffffff
 
-    - label:
-        id: shoppingcart_label
-        align: CENTER
-        text_font: roboto_icons_40
-        text: "\U000F0110"
-        text_color: blue
-        y: -105
-    
-    - label:
-        id: shopping_label
-        align: CENTER
-        y: -35
-        text: ""                # will be updated from HA
-        text_font: montserrat_26
-    # Response box (bottom)
-    - label:
-        id: va_response_label
-        align: CENTER
-        y: 120
-        text: "..."
-        text_font: montserrat_18
+        # Blue power icon
+        - label:
+            id: power_icon_lbl
+            align: CENTER
+            y: -19
+            x: -172
+            text: "\U000F0241"
+            text_font: roboto_icons_40
+            text_color: 0x2196F3  # blue (Material Blue 500)
 
-    # temperature label at bottom
-    - label:
-        id: temp_value_label
-        align: CENTER
-        y: 185
-        x: 10
-        text: "--.-°C"
-        text_font: montserrat_24
-
-    # Circular Timer progress arc around the edge
-    - arc:
-        id: timer_progress_arc
-        align: CENTER
-        width: 396
-        height: 396
-        radius: 0            # LVGL computes radius from size; 0 keeps it centered
-        bg_opa: transp
-        bg_color: 0xE0E0E0   # light grey
-        start_angle: 0
-        end_angle: 360
-        rotation: 0
-        min_value: 0
-        max_value: 100
-        value: 0 
-        indicator:
-          bg_color: 0x26ED3A # green progress (change to taste)
-          width: 10          # ring thickness in pixels
+        # Watt value
+        - label:
+            id: power_value_lbl
+            align: CENTER
+            x: -164
+            y: 16 
+            text: "-- W"
+            text_font: montserrat_22
+            text_color: 0x2196F3 
 
 
-   ##below are used to show home assistant value:
+        - label:
+            id: shoppingcart_label
+            align: CENTER
+            text_font: roboto_icons_40
+            text: "\U000F0110"
+            text_color: 0x006D5B
+            y: -105
+        
+        - label:
+            id: shopping_label
+            align: CENTER
+            x: 0
+            y: 12
+            text: ""                # will be updated from HA
+            text_font: montserrat_26
+            text_color: 0xffffff
+            height: 195
+            long_mode: SCROLL_CIRCULAR
+
+        - label:
+            id: thermometer
+            align: CENTER
+            text_font: roboto_icons_40
+            text: "\U000F050F"
+            text_color: red
+            x: 175
+            y: -19
+            
+        # temperature label at mid-right
+        - label:
+            id: temp_value_label
+            align: CENTER
+            x: 170
+            y: 16
+            text: "--°C"
+            text_font: montserrat_24
+            text_color: amber
+        # Response box (bottom)
+        - label:
+            id: va_response_label
+            align: CENTER
+            text_align: CENTER
+            y: 150
+            text: "..."
+            text_font: montserrat_22
+            text_color: 0xffffff
+            width: 255
+            long_mode: SCROLL_CIRCULAR
+            
+
+        - label:
+            id: timer_progress_text
+            align: CENTER
+            y: 170
+            text: ""
+            text_font: montserrat_44
+            text_color: 0xffffff
+            hidden: true
+
+        # Circular Timer progress arc around the edge
+        - arc:
+            id: timer_progress_arc
+            align: CENTER
+            width: 400
+            height: 400
+            radius: 0            # LVGL computes radius from size; 0 keeps it centered
+            bg_opa: transp
+            bg_color: 0xE0E0E0   # grey
+            #start_angle: 0
+            start_angle: 30
+            #end_angle: 360
+            end_angle: 330
+            rotation: 90
+            min_value: 0
+            max_value: 100
+            value: 0 
+            indicator:
+              bg_color: 0x26ED3A # green progress
+              width: 20          # ring thickness in pixels
+
+    - id: clock_page
+      widgets:
+        - obj: # clock container
+            height: SIZE_CONTENT
+            width: 420
+            align: CENTER
+            pad_all: 0
+            border_width: 0
+            bg_color: 0xFFFFFF
+            widgets:
+              - meter: # clock face
+                  height: 410
+                  width: 410
+                  align: CENTER
+                  bg_opa: TRANSP
+                  border_width: 0
+                  text_color: 0x000000
+                  scales:
+                    - range_from: 0          # seconds
+                      range_to: 60
+                      angle_range: 360
+                      rotation: 270          # 12 o'clock at top
+                      ticks:
+                        width: 1
+                        count: 61 
+                        length: 6
+                        color: 0xC0C0C0
+                      indicators:
+                        - line:
+                            id: second_hand
+                            width: 2
+                            color: 0xFF0000
+                            r_mod: -2         # slightly longer than minute hand; adjust to taste
+                            value: 0          # will be updated every second
+                    - range_from: 0 # minutes scale
+                      range_to: 60
+                      angle_range: 360
+                      rotation: 270
+                      ticks:
+                        width: 1
+                        count: 61
+                        length: 10
+                        color: 0x000000
+                      indicators:
+                        - line:
+                            id: minute_hand
+                            width: 3
+                            color: 0xa6a6a6
+                            r_mod: -4
+                            value: 0
+                    - range_from: 1 # hours scale for labels
+                      range_to: 12
+                      angle_range: 330
+                      rotation: 300
+                      ticks:
+                        width: 1
+                        count: 12
+                        length: 1
+                        major:
+                          stride: 1
+                          width: 4
+                          length: 10
+                          color: 0xC0C0C0
+                          label_gap: 12
+                    - range_from: 0 # hi-res hours scale for hand
+                      range_to: 720
+                      angle_range: 360
+                      rotation: 270
+                      ticks:
+                        count: 0
+                      indicators:
+                        - line:
+                            id: hour_hand
+                            width: 5
+                            color: 0xa6a6a6
+                            r_mod: -30
+                            value: 0
+              - label:
+                  id: day_label
+                  styles: date_style
+                  y: -30
+              - label:
+                  id: date_label
+                  styles: date_style
+                  y: 30
+              - label:
+                  id: va_phase_label_clock
+                  styles: date_style
+                  y: 70
+                  
+
   style_definitions:
     # ── white box with black border (used for response)
     - id: box_style
-      border_color: "000000"
+      border_color: white
       border_width: 2
       pad_all: 6
       radius: 4
-      text_color: "000000"
+      text_color: white
 
     # a dimmed style for muted page
     - id: muted_bg_style
-      bg_color: 0x444444
+      bg_color: red
 
-    # Base list item style (white card, black text, rounded corners)
-    
+    # Base list item style (white text)
     - id: shopping_item_style
       bg_opa: transp
       bg_color: 0xFFFFFF
@@ -1264,51 +1572,116 @@ lvgl:
       pad_bottom: 8
       text_color: 0x000000
 
-    # Active/selected item (e.g., currently focused)
-    - id: shopping_item_active_style
-      bg_color: 0xE6F4EA       # light green
-      border_color: 0x26ED3A    # green
-      text_color: 0x000000
+    - id: date_style
+      text_color: 0x000000       # black text
+      text_font: montserrat_28
+      bg_opa: TRANSP             # transparent background
+      border_opa: TRANSP
+      pad_all: 4
+      align: CENTER 
 
-
-
-# -----------------------------------------------------------------------------
-# TEXT SENSORS → last request/response (easy to show on LVGL)
+# TEXT SENSORS → last response
 # -----------------------------------------------------------------------------
 text_sensor:
-
   - platform: template
     id: text_response
-    on_value:
-      - lambda: |-
-          if (id(text_response).state.length() > 32) {
-            std::string s = id(text_response).state.c_str();
-            std::string t = esphome::str_truncate(s.c_str(), 31);
-            id(text_response).state = (t + "...").c_str();
-          }
-
 
 sensor:
   - platform: homeassistant
     id: ha_living_temp
     entity_id: sensor.broadlink_livingroom_temperature
     on_value:
-      # Optional: update a label showing the numeric value as text
       - lvgl.label.update:
           id: temp_value_label
           text:
-            format: "%.1f°C"
+            format: "%.0f°C"
             args: [ 'x' ]
       
       - logger.log:
           format: "LivingRoomTemp raw=%.2f"
           args: [ 'x' ]
 
+  - platform: homeassistant
+    id: ha_power_w
+    entity_id: sensor.rumpus_wroom_battery_powerpal_real_time_power
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: power_value_lbl
+            text:
+              format: "%d W"
+              # IMPORTANT: this is a plain expression string, not !lambda
+              args: [ "(int) roundf(id(ha_power_w).state)" ]
+   # Reports the WiFi signal strength/RSSI in dB
+
+  - platform: wifi_signal
+    name: "WiFi Signal dB"
+    id: wifi_signal_db
+    update_interval: 60s
+    entity_category: "diagnostic"
 
 
-# -----------------------------------------------------------------------------
+  - platform: copy # Reports the WiFi signal in %
+    source_id: wifi_signal_db
+    id: wifi_signal_pct
+    name: "WiFi Signal Percent"
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+    device_class: ""
+    #below added to update the label
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: wifi_db_label
+            text:
+              format: "%.0f"
+              args: [ 'x' ]
+
+  - platform: debug
+    
+    free:
+      name: "Heap Free"
+      unit_of_measurement: kB
+      accuracy_decimals: 1
+      filters:
+        - lambda: |-
+            // bytes -> kB (SI)
+            return x / 1000.0;
+
+    loop_time:
+      name: "Loop Time"
+    
+    block:
+      name: "Heap Max Block"
+      unit_of_measurement: kB
+      accuracy_decimals: 1
+      filters:
+        - lambda: |-
+            return x / 1000.0;
+
+    psram:
+      name: "Free PSRAM"
+      unit_of_measurement: kB
+      accuracy_decimals: 1
+      filters:
+        - lambda: |-
+            return x / 1000.0;
+
+    
+    cpu_frequency:
+      name: "CPU Frequency"
+      unit_of_measurement: MHz   # convert Hz -> MHz for readability
+      accuracy_decimals: 1
+      filters:
+        - lambda: |-
+            // Hz -> MHz
+            return x / 1e6;
+
 # GLOBALS → phase tracking + init flag + IDs for phases
-# -----------------------------------------------------------------------------
+# -----------------------------------------------------
 globals:
   - id: init_in_progress
     type: bool
@@ -1346,7 +1719,6 @@ globals:
     restore_value: false
     initial_value: "10"
 
-
   - id: last_tts_ms
     type: int
     restore_value: false
@@ -1354,15 +1726,21 @@ globals:
 
   - id: timer_progress_percent
     type: int
-    restore_value: false
+    restore_value: yes
     initial_value: "0"
 
   - id: timer_progress_has_timer
     type: bool
-    restore_value: false
+    #set to restore timer on reboot
+    restore_value: yes
     initial_value: "false"
-  # phase text blinking
 
+  - id: timer_progress_seconds_left
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  # phase text blinking
   - id: va_blinking
     type: bool
     initial_value: "false"
@@ -1370,8 +1748,6 @@ globals:
   - id: va_blink_on
     type: bool
     initial_value: "false"
-
-
 
 
 
@@ -1419,8 +1795,6 @@ color:
     hex: 'FBAB35'
   - id: lime
     hex: '20FC30'
-  - id: pink
-    hex: 'D92BBC'
   - id: yellow
     hex: 'FFC000'
 
@@ -1440,7 +1814,9 @@ font:
           "\U000F07D1", # HA-house with wifi
           "\U000F1A35",   # HA offline
           "\U000F16BD", #wifi connected
-          "\U000F16BC"  #wifidisconnected
+          "\U000F16BC",  #wifidisconnected
+          "\U000F0241", #lightening
+          "\U000F050F" #thermometer
           ]
   - file: "gfonts://Roboto+Condensed"
     id: roboto_icons_40
@@ -1455,5 +1831,13 @@ font:
           "\U000F07D1", # HA-house with wifi
           "\U000F1A35",   # HA offline
           "\U000F16BD", #wifi connected
-          "\U000F16BC"  #wifidisconnected
+          "\U000F16BC",  #wifidisconnected
+          "\U000F0241", #lightening
+          "\U000F050F"
           ]
+
+image:
+  - file: ${bg_img}
+    id: round_bg
+    type: RGB565    # good balance of quality & size
+    resize: 420x420
