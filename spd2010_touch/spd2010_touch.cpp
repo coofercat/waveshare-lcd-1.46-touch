@@ -12,19 +12,22 @@ namespace spd2010_touch {
 
 static const char *const TAG = "spd2010_touch";
 
-// --- SPD2010 register map (per vendor sample) ---
-static const uint16_t REG_CLEAR_INT   = 0x0002;
-static const uint16_t REG_CPU_START   = 0x0004;
-static const uint16_t REG_START_TOUCH = 0x0046;
-static const uint16_t REG_POINT_MODE  = 0x0050;
+// --- SPD2010 register map (per Waveshare / Espressif samples) ---
+static const uint16_t REG_CLEAR_INT   = 0x0002;   // write 0x0001 to clear IRQ
+static const uint16_t REG_CPU_START   = 0x0004;   // write 0x0001 to start CPU
+static const uint16_t REG_START_TOUCH = 0x0046;   // write 0x0000 to start touch
+static const uint16_t REG_POINT_MODE  = 0x0050;   // write 0x0000 point mode
 
-static const uint16_t REG_STATUS      = 0x0020; // retained for debug-only reads
+// Optional status/diag (not used for gating in this version)
+static const uint16_t REG_STATUS      = 0x0020;
 static const uint16_t REG_FW_VERSION  = 0x0026;
 
-static const uint16_t REG_HDP         = 0x0300; // Host Data Packet buffer
-static const uint16_t REG_HDP_STATUS  = 0x02FC; // Host Data Packet status
+// Host Data Packet buffer
+static const uint16_t REG_HDP         = 0x0300;
+// Host Data Packet "status" page (raw dump only for now)
+static const uint16_t REG_HDP_STATUS  = 0x02FC;
 
-// Hex dump helper (for temporary debug; not performance-critical)
+// Hex dump helper
 static std::string format_hex(const uint8_t *data, size_t len) {
   char buf[256];
   size_t pos = 0;
@@ -54,10 +57,10 @@ void SPD2010Touch::setup() {
     ESP_LOGI(TAG, "SPD2010 INT pin configured (active-low)");
   }
 
-  // Read FW version (for diagnostics)
+  // Read FW version (diagnostics)
   this->read_fw_version_();
-  this->clear_int_sequence_(); 
-  // Initial command sequence (mirrors vendor sample)
+
+  // Initial command sequence (mirrors vendor samples)
   ESP_LOGI(TAG, "Sending initial SPD2010 commands...");
   this->write_cmd_(REG_POINT_MODE,  0x0000);
   esp_rom_delay_us(200);
@@ -65,7 +68,7 @@ void SPD2010Touch::setup() {
   esp_rom_delay_us(200);
   this->write_cmd_(REG_CPU_START,   0x0001);
   esp_rom_delay_us(200);
-  this->write_cmd_(REG_CLEAR_INT,   0x0001);
+  this->write_cmd_(REG_CLEAR_INT,   0x0001);  // clear any pending IRQ
   esp_rom_delay_us(200);
 
   // Register LVGL input device
@@ -127,10 +130,10 @@ bool SPD2010Touch::read_bytes16_(uint16_t reg, uint8_t *buf, size_t len) {
 }
 
 // --------------------------------------------------------------------------------------
-// SPD2010 protocol helpers (existing functions retained)
+// SPD2010 protocol helpers (status/diag kept for debugging only)
 // --------------------------------------------------------------------------------------
 bool SPD2010Touch::read_tp_status_length_(TpStatus &st) {
-  // Retained for debugging; no longer used for gating reads
+  // Retained for diagnostics; not used for gating in this version
   uint8_t d[4] = {0};
   if (!this->read_bytes16_(REG_STATUS, d, sizeof(d)))
     return false;
@@ -160,7 +163,7 @@ bool SPD2010Touch::read_tp_hdp_(const TpStatus &st,
   constexpr uint16_t kMaxHdp = 4 + 10 * 6; // 64 bytes
   uint16_t len = st.read_len;
 
-  // In the INT-gated path, we ignore status-provided len and read a safe, bounded block
+  // Clamp to safe block; we don't trust status-provided length
   if (len < 4 || len > kMaxHdp) {
     ESP_LOGW(TAG, "HDP read_len invalid: %u, clamping to %u", (unsigned)len, kMaxHdp);
     len = kMaxHdp;
@@ -169,10 +172,10 @@ bool SPD2010Touch::read_tp_hdp_(const TpStatus &st,
   uint8_t buf[kMaxHdp] = {0};
   if (!this->read_bytes16_(REG_HDP, buf, len)) return false;
 
-  // Simple header guard
+  // Minimal header guard (first finger ID in buf[4] when present)
   uint8_t check_id = (len >= 5) ? buf[4] : 0xFF;
 
-  if ((check_id <= 0x0A) /* finger id range */) {
+  if ((check_id <= 0x0A)) {
     touch_num = (len - 4) / 6;
     if (touch_num > max_points) touch_num = max_points;
     gesture = 0x00;
@@ -184,25 +187,25 @@ bool SPD2010Touch::read_tp_hdp_(const TpStatus &st,
       points[i].y      = (((buf[7 + off] & 0x0F) << 8) | buf[6 + off]);
       points[i].weight = buf[8 + off];
     }
-  } else if ((check_id == 0xF6) /* gesture id */) {
+  } else if (check_id == 0xF6) {
     touch_num = 0;
     gesture   = buf[6] & 0x07;
   } else {
     touch_num = 0;
     gesture   = 0x00;
   }
+
   return true;
 }
 
 bool SPD2010Touch::read_tp_hdp_status_(uint8_t &status, uint16_t &next_len) {
+  // Raw dump only (not used for gating in this version)
   uint8_t d[8] = {0};
   if (!this->read_bytes16_(REG_HDP_STATUS, d, sizeof(d))) return false;
-  
-  // TEMP: log raw bytes to find correct mapping
+
   ESP_LOGV(TAG, "HDP_STATUS raw: %s", format_hex(d, sizeof(d)).c_str());
 
-  // Keep current mapping for now; we'll adjust once we see the dump
-
+  // Keep a placeholder mapping for now (we won't act on it)
   status   = d[5];
   next_len = (static_cast<uint16_t>(d[3]) << 8) | d[2];
   return true;
@@ -210,7 +213,6 @@ bool SPD2010Touch::read_tp_hdp_status_(uint8_t &status, uint16_t &next_len) {
 
 bool SPD2010Touch::read_hdp_remain_data_(uint16_t next_len) {
   if (next_len == 0) return true;
-  // Read remaining data from 0x0300
   uint8_t tmp[32] = {0};
   size_t to_read = next_len > sizeof(tmp) ? sizeof(tmp) : next_len;
   return this->read_bytes16_(REG_HDP, tmp, to_read);
@@ -257,17 +259,17 @@ void SPD2010Touch::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) {
   self->last_poll_ms_ = now;
 
   // Gate reads: only read when INT = LOW (active)
-  
   if (self->int_pin_) {
-    bool int_level1 = self->int_pin_->digital_read(); // true = HIGH, false = LOW
+    bool int_level1 = self->int_pin_->digital_read(); // true = HIGH (idle), false = LOW (data)
     ESP_LOGV(TAG, "INT before read_cb: %d (0=LOW,1=HIGH)", int_level1);
     if (int_level1) {
+      // No packet pending; report last state
       data->state   = self->last_pressed_ ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
       data->point.x = self->last_x_;
       data->point.y = self->last_y_;
       return;
     }
-    // Debounce / confirm
+    // Debounce / confirm LOW
     esp_rom_delay_us(2000);
     bool int_level2 = self->int_pin_->digital_read();
     ESP_LOGV(TAG, "INT recheck: %d (0=LOW,1=HIGH)", int_level2);
@@ -278,8 +280,6 @@ void SPD2010Touch::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) {
       return;
     }
   }
-
-
 
   uint16_t x, y; uint8_t w; bool pressed;
   if (!self->tp_read_data_(x, y, w, pressed)) {
@@ -303,7 +303,7 @@ void SPD2010Touch::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) {
 }
 
 // --------------------------------------------------------------------------------------
-// High-level single-point read (INT-gated, HDP-only path)
+// High-level single-point read (INT-gated; HDP-only; fail-safe clear)
 // --------------------------------------------------------------------------------------
 bool SPD2010Touch::tp_read_data_(uint16_t &x, uint16_t &y, uint8_t &weight, bool &pressed) {
   // Secondary INT guard (defensive)
@@ -314,15 +314,15 @@ bool SPD2010Touch::tp_read_data_(uint16_t &x, uint16_t &y, uint8_t &weight, bool
     }
   }
 
-  // Read a bounded HDP packet; do not trust REG_STATUS length or run state
+  // Read a bounded HDP packet; do not trust REG_STATUS/REG_HDP_STATUS for gating
   TouchPoint pts[10]{};
   uint8_t num = 0;
   uint8_t ges = 0;
 
-  // Force a safe length to the helper; it will clamp to 64 bytes and parse header
+  // Force a safe length to the helper; clamp to 64 bytes and parse header
   TpStatus pseudo{};
   pseudo.read_len = 64;
-  pseudo.pt_exist = true;   // permit touch parse path
+  pseudo.pt_exist = true;
   pseudo.gesture  = false;
 
   if (!this->read_tp_hdp_(pseudo, num, pts, 10, ges)) {
@@ -330,31 +330,16 @@ bool SPD2010Touch::tp_read_data_(uint16_t &x, uint16_t &y, uint8_t &weight, bool
     return false;
   }
 
-  // Walk the HDP status machine to finish packet and clear INT
-//  while (true) {
-//    uint8_t hdp_status = 0;
-//    uint16_t next_len = 0;
-//    if (!this->read_tp_hdp_status_(hdp_status, next_len)) break;
+  // FAIL-SAFE: always clear IRQ and re-assert run/start so INT can deassert
+  this->clear_int_sequence_();
+  esp_rom_delay_us(200);
+  this->write_cmd_(REG_POINT_MODE,  0x0000);
+  esp_rom_delay_us(200);
+  this->write_cmd_(REG_START_TOUCH, 0x0000);
+  esp_rom_delay_us(200);
+  this->write_cmd_(REG_CPU_START,   0x0001);
+  esp_rom_delay_us(200);
 
-    // print the packet status and next_len
-//    ESP_LOGV(TAG, "HDP_STATUS=0x%02X next_len=%u", hdp_status, (unsigned)next_len);
-
-//    if (hdp_status == 0x82) {         // packet complete; clear IRQ
-//      this->clear_int_sequence_();
-//      break;
-//    } else if (hdp_status == 0x00 && next_len > 0) {
-//      if (!this->read_hdp_remain_data_(next_len)) break;
-//      continue;
-//    } else {
-      
-      // Unknown / invalid status → clear IRQ anyway to deassert INT
-//      this->clear_int_sequence_();
-//      break;
-
-//    }
-// }
-//End while(true)
-    
   // Return first finger
   if (num > 0 && pts[0].weight > 0) {
     x = pts[0].x; y = pts[0].y; weight = pts[0].weight; pressed = true;
