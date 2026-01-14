@@ -362,13 +362,11 @@ void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) 
         
 
         std::vector<uint8_t> hdp(st.read_len);
+
         // TEMP LOG
         ESP_LOGD(TAG, "status: pt=%d gest=%d len=%u",
                  (int)st.status_low.pt_exist, (int)st.status_low.gesture, (unsigned)st.read_len);
-        if (st.read_len >= 10) {
-          ESP_LOGD(TAG, "hdp[0..9]=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-                   hdp[0],hdp[1],hdp[2],hdp[3],hdp[4],hdp[5],hdp[6],hdp[7],hdp[8],hdp[9]);
-        }
+
         if (spd_read_reg_(self->spd_dev_, REG_HDP, hdp.data(), hdp.size()) == ESP_OK) {
           // 3) Parse to LVGL point(s)
           cnt = parse_hdp_first_points_(hdp.data(), hdp.size(), points, 5);
@@ -540,8 +538,6 @@ static uint8_t parse_hdp_first_points_(const uint8_t *d, size_t len,
   }
   return count;
 }
-
-
 
 }  // namespace spd2010_glue
 }  // namespace esphome
