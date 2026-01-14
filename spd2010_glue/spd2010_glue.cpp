@@ -292,8 +292,8 @@ void Spd2010LvglGlue::setup() {
   io_gpio.intr_type = GPIO_INTR_DISABLE;
   gpio_config(&io_gpio);
 
-  // Register LVGL input device
-  this->register_lvgl_indev_();
+  // Register LVGL input device - deferred to loop
+  //this->register_lvgl_indev_();
   
   // after this->register_lvgl_indev_();
   for (int n = 0; n < 5; ++n) {
@@ -312,6 +312,8 @@ void Spd2010LvglGlue::setup() {
 }
 
 
+
+
 void Spd2010LvglGlue::dump_config() {
   ESP_LOGCONFIG(TAG, "SPD2010 LVGL glue (I2C addr=0x53)");
   ESP_LOGCONFIG(TAG, "Screen: %ux%u, swap_xy=%s, mirror_x=%s, mirror_y=%s, INT=GPIO%d",
@@ -327,12 +329,28 @@ void Spd2010LvglGlue::register_lvgl_indev_() {
   this->indev_drv_.type      = LV_INDEV_TYPE_POINTER;
   this->indev_drv_.read_cb   = &Spd2010LvglGlue::lvgl_read_cb_;
   this->indev_drv_.user_data = this;
+  
+    // bind to the display
+  this->indev_drv_.disp = lv_disp_get_default();
+  
   this->indev_ = lv_indev_drv_register(&this->indev_drv_);
   
+
+
   ESP_LOGI(TAG, "LVGL indev registered");
 }
 
-
+void Spd2010LvglGlue::loop() {
+  if (!indev_registered_) {
+    lv_disp_t *disp = lv_disp_get_default();
+    if (disp) {
+      register_lvgl_indev_();
+      indev_registered_ = true;
+    } else {
+      // Will try again next loop iteration
+    }
+  }
+}
 
 void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) {
   auto *self = reinterpret_cast<Spd2010LvglGlue *>(drv->user_data);
@@ -385,7 +403,8 @@ void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) 
             data->state   = LV_INDEV_STATE_RELEASED;
             data->point.x = self->last_x_; data->point.y = self->last_y_;
             self->last_pressed_ = false;
-            ESP_LOGD(TAG, "cnt=0 (gesture-only or zero-weight)");
+            // No press, don't log for now
+            //ESP_LOGD(TAG, "cnt=0 (gesture-only or zero-weight)");
           }
         } else {
           // HDP read failed; keep last state
@@ -538,6 +557,8 @@ static uint8_t parse_hdp_first_points_(const uint8_t *d, size_t len,
   }
   return count;
 }
+
+
 
 }  // namespace spd2010_glue
 }  // namespace esphome
