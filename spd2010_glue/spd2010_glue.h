@@ -1,4 +1,4 @@
-
+//Working with no rotation
 #pragma once
 #include "esphome/core/component.h"
 #include "sdkconfig.h"
@@ -22,7 +22,7 @@ class Spd2010LvglGlue : public Component {
 
   void setup() override;
   void dump_config() override;
-
+  void loop() override;   
   //  PCA9554 helpers (for backlight, GPIO expand, etc.) ---
   esp_err_t pca9554_init(uint8_t i2c_addr = 0x20);
   esp_err_t pca9554_set_pin_mode(uint8_t pin, bool output);     // true=output, false=input
@@ -66,7 +66,7 @@ class Spd2010LvglGlue : public Component {
   uint32_t irq_last_change_ms_{0};
   int      irq_last_level_{1};         // assume idle-high at boot
   uint32_t irq_stuck_threshold_ms_{200}; // e.g., warn if low > 200 ms
-
+  bool indev_registered_{false};
 };
 
 } // namespace spd2010_glue
