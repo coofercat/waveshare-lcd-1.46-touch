@@ -29,9 +29,7 @@ display:
       height: 412
       width: 412     
     cs_pin: GPIO21
-    reset_pin: GPIO3
-#      pca9554: pca9554a_device
-#      number: 1     
+    reset_pin: GPIO3  
     auto_clear_enabled: false 
     spi_mode: 0       
     draw_rounding: 4 
@@ -462,7 +460,7 @@ lvgl:
         text: "Loading..."
         text_font: montserrat_24
         y: -20
-    #below for touch testing
+
     - button:
         id: test_button
         align: CENTER
