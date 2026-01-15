@@ -5,7 +5,7 @@ This project is for esphome, download the three files in esp2010_glue folder and
 
 Added external component spd2010_glue, which glue the official lcd_touch driver and lcd_touch_spd2010.
 
-##Functions
+## Functions
 - Voice assistant
 - LCD screen showing shoppint list active items
 - Showing home current energy (needs your own sensor)
