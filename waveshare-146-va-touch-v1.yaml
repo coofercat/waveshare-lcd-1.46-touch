@@ -6,6 +6,7 @@
 substitutions:
   bg_img: /config/esphome/images/default/waveshare_bg_tp420.jpg
   wifi_name: "Waveshare-146-Va"
+  right_switch: "light.tv_floor_lamp"
 
 esphome:
   name: waveshare-146-va
@@ -1452,14 +1453,14 @@ lvgl:
                       - homeassistant.action:
                           action: light.turn_on
                           data:
-                            entity_id: light.tv_floor_lamp
+                            entity_id: ${light.tv_floor_lamp}
                             #entity_id: light.aqara_hub_892a_lightbulb_892a
                     else:
                       - homeassistant.action:
                           action: light.turn_off
                           data:
                             #entity_id: light.aqara_hub_892a_lightbulb_892a
-                            entity_id: light.tv_floor_lamp
+                            entity_id: ${light.tv_floor_lamp}
                 - logger.log:
                     format: "Switch state: %d"
                     args: [ x ]
