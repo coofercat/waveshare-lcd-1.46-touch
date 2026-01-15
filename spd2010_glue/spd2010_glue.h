@@ -1,4 +1,4 @@
-//Working with no rotation
+
 #pragma once
 #include "esphome/core/component.h"
 #include "sdkconfig.h"
@@ -44,7 +44,7 @@ class Spd2010LvglGlue : public Component {
   i2c_master_dev_handle_t pca_dev_{nullptr};
   uint8_t pca_addr_{0x20};
 
-  // NEW: raw SPD2010 device handle (0x53) on the same I²C bus
+  // raw SPD2010 device handle (0x53) on the same I²C bus
   i2c_master_dev_handle_t spd_dev_{nullptr};
 
   // LVGL indev
@@ -54,7 +54,7 @@ class Spd2010LvglGlue : public Component {
   // Screen & orientation
   uint16_t w_{412}, h_{412};
   bool swap_xy_{false}, mirror_x_{false}, mirror_y_{false};
-  int int_gpio_{4}; // Waveshare INT=GPIO4
+  int int_gpio_{4};
 
   // Last state cache
   static constexpr uint32_t kPollMs = 20;
@@ -65,8 +65,19 @@ class Spd2010LvglGlue : public Component {
   // IRQ stuck detection
   uint32_t irq_last_change_ms_{0};
   int      irq_last_level_{1};         // assume idle-high at boot
-  uint32_t irq_stuck_threshold_ms_{200}; // e.g., warn if low > 200 ms
+  uint32_t irq_stuck_threshold_ms_{400}; // e.g., warn if low > 500 ms
   bool indev_registered_{false};
+  
+  //--- Below for less resource usage.
+  // Touch sample cadence (poll from loop(), not inside LVGL cb)
+  static constexpr uint32_t kTouchPollMs = 10;
+  
+  // Upper bound on SPD2010 HDP frame we’ll parse in-place
+  static constexpr size_t kMaxHdpBytes = 128;   // clamp, drain remainder if larger
+
+  uint32_t last_touch_poll_ms_{0};
+  uint8_t hdp_buf_[kMaxHdpBytes];               // pre-allocated parsing buffer
+
 };
 
 } // namespace spd2010_glue
