@@ -5,6 +5,13 @@ This project is for esphome, download the three files in esp2010_glue folder and
 
 Added external component spd2010_glue, which glue the official lcd_touch driver and lcd_touch_spd2010.
 
+##Functions
+- Voice assistant
+- LCD screen showing shoppint list active items
+- Showing home current energy (needs your own sensor)
+- Switch for a light, or any light
+- Touch screen function for lvgl.
+
 ## Shopping list
 My device works as a fridge magenet, so I put shopping list in the middle.
 Find the text sensor from the device, and create below automation in HA to sync shopping list item through.
