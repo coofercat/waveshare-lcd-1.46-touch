@@ -1,16 +1,14 @@
-
 #include "spd2010_glue.h"
 #include "esphome/core/log.h"
 #include "esp_timer.h"
 #include "esp_check.h"
-
+#include "lvgl.h" 
 
 #include <vector>
 #include <algorithm>
 
 namespace esphome {
 namespace spd2010_glue {
-
 static const char *const TAG = "spd2010_glue";
 
 // Forward declaration so lvgl_read_cb_() can call it
@@ -19,8 +17,7 @@ static uint8_t parse_hdp_first_points_(const uint8_t *d,
                                        esp_lcd_touch_point_data_t *out,
                                        uint8_t max_points);
 
-
-// ===== SPD2010 raw register helpers (16-bit address, demo-compatible) =====
+// ===== SPD2010 raw register helpers (16-bit address) =====
 
 // Write 16-bit register value (little-endian data after big-endian reg address)
 inline esp_err_t spd_write_reg16_(i2c_master_dev_handle_t dev, uint16_t reg, uint16_t val_le) {
@@ -40,7 +37,7 @@ inline esp_err_t spd_read_reg_(i2c_master_dev_handle_t dev, uint16_t reg, uint8_
   return i2c_master_receive(dev, out, len, -1);
 }
 
-// --- Register addresses & meanings (from your demo) ---
+// --- Register addresses & meanings ---
 static constexpr uint16_t REG_TP_STATUS_LEN   = 0x2000; // 4 bytes: status_low, status_high, len_lo, len_hi
 static constexpr uint16_t REG_HDP             = 0x0003; // HDP payload (length = st.read_len)
 static constexpr uint16_t REG_HDP_STATUS      = 0xFC02; // 8 bytes: next_len_lo, next_len_hi, ..., status @ [5]
@@ -60,7 +57,6 @@ inline bool tic_in_cpu (uint8_t sh) { return (sh & 0x20) != 0; }
 inline bool tint_low   (uint8_t sh) { return (sh & 0x10) != 0; }
 inline bool cpu_run    (uint8_t sh) { return (sh & 0x08) != 0; }
 
-// Structs mirroring your demo
 struct tp_status_t {
   struct {
     uint8_t pt_exist : 1;
@@ -85,14 +81,13 @@ esp_err_t read_tp_status_length_(i2c_master_dev_handle_t dev, tp_status_t *st) {
   st->status_low.pt_exist    = (d[0] & 0x01);
   st->status_low.gesture     = (d[0] & 0x02);
   st->status_low.aux         = (d[0] & 0x08);
-
   st->status_high.tic_busy   = ((d[1] & 0x80) >> 7);
   st->status_high.tic_in_bios= ((d[1] & 0x40) >> 6);
   st->status_high.tic_in_cpu = ((d[1] & 0x20) >> 5);
   st->status_high.tint_low   = ((d[1] & 0x10) >> 4);
   st->status_high.cpu_run    = ((d[1] & 0x08) >> 3);
-
-  st->read_len = (uint16_t)d[3] << 8 | (uint16_t)d[2];  // little-endian length
+  // little-endian length
+  st->read_len = (uint16_t)d[3] << 8 | (uint16_t)d[2];
   return ESP_OK;
 }
 
@@ -112,7 +107,7 @@ esp_err_t read_tp_hdp_status_(i2c_master_dev_handle_t dev, tp_hdp_status_t *hs) 
 // Read HDP remain data (next_packet_len bytes)
 esp_err_t read_hdp_remain_(i2c_master_dev_handle_t dev, uint16_t len) {
   if (len == 0) return ESP_OK;
-  // The demo reads from REG_HDP (0x0003) again for remain data
+  //  reads from REG_HDP (0x0003) again for remain data
   std::vector<uint8_t> tmp(len);
   return spd_read_reg_(dev, REG_HDP, tmp.data(), tmp.size());
 }
@@ -141,7 +136,7 @@ inline esp_err_t start_(i2c_master_dev_handle_t dev) {
   return ESP_OK;
 }
 
-// Post-read IRQ service (mirrors your demo tp_read_data() end-of-flow)
+// Post-read IRQ service
 
 esp_err_t post_read_irq_service_(i2c_master_dev_handle_t dev, bool *cleared) {
   tp_status_t st{};
@@ -188,14 +183,11 @@ esp_err_t post_read_irq_service_(i2c_master_dev_handle_t dev, bool *cleared) {
     return ESP_OK;
   }
 
-  // AUX + CPU run → clear INT (from your demo)
   if (st.status_high.cpu_run && st.status_low.aux) {
     ESP_RETURN_ON_ERROR(clear_int_(dev), TAG, "clear INT");
   }
-
   return ESP_OK;
 }
-
 
 void Spd2010LvglGlue::setup() {
   // --- New I²C master bus API (IDF 5.x) ---
@@ -311,9 +303,6 @@ void Spd2010LvglGlue::setup() {
 
 }
 
-
-
-
 void Spd2010LvglGlue::dump_config() {
   ESP_LOGCONFIG(TAG, "SPD2010 LVGL glue (I2C addr=0x53)");
   ESP_LOGCONFIG(TAG, "Screen: %ux%u, swap_xy=%s, mirror_x=%s, mirror_y=%s, INT=GPIO%d",
@@ -335,21 +324,77 @@ void Spd2010LvglGlue::register_lvgl_indev_() {
   
   this->indev_ = lv_indev_drv_register(&this->indev_drv_);
   
-
-
   ESP_LOGI(TAG, "LVGL indev registered");
 }
 
 void Spd2010LvglGlue::loop() {
   if (!indev_registered_) {
-    lv_disp_t *disp = lv_disp_get_default();
-    if (disp) {
+    
+    if (lv_disp_get_default()) {
       register_lvgl_indev_();
       indev_registered_ = true;
-    } else {
-      // Will try again next loop iteration
     }
   }
+  
+  // Lightweight, time-gated polling
+  const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+  if (now_ms - last_touch_poll_ms_ < kTouchPollMs) return;
+  last_touch_poll_ms_ = now_ms;
+
+  // Only sample when IRQ is asserted (low)
+  const int irq_lvl = gpio_get_level(static_cast<gpio_num_t>(int_gpio_));
+  if (irq_lvl != 0 || !spd_dev_) return;
+
+  // 1) Read status to get length
+  tp_status_t st{};
+  if (read_tp_status_length_(spd_dev_, &st) != ESP_OK) return;
+
+  // If no points/gesture, release
+  if (!(st.status_low.pt_exist || st.status_low.gesture) || st.read_len == 0) {
+    last_pressed_ = false;
+    return;
+  }
+
+  // 2) Read HDP frame (clamp to buffer)
+  const size_t to_read = std::min<size_t>(st.read_len, kMaxHdpBytes);
+  if (spd_read_reg_(spd_dev_, REG_HDP, hdp_buf_, to_read) != ESP_OK) return;
+
+  // 3) Parse into a local point (no heap allocs)
+  esp_lcd_touch_point_data_t points[5] = {{0}};
+  uint8_t cnt = parse_hdp_first_points_(hdp_buf_, to_read, points, 5);
+
+  if (cnt > 0) {
+    last_pressed_ = true;
+
+    // --- ORIENTATION TRANSFORM, read config from yaml---
+    uint16_t x = points[0].x;
+    uint16_t y = points[0].y;
+
+    if (swap_xy_) {
+      uint16_t tmp = x; x = y; y = tmp;
+    }
+    if (mirror_x_) {
+      x = (w_ > 0) ? (w_ - 1 - x) : x;
+    }
+    if (mirror_y_) {
+    y = (h_ > 0) ? (h_ - 1 - y) : y;
+    }
+
+    // Cache transformed values
+
+    last_x_ = x;
+    last_y_ = y;
+  } else {
+    last_pressed_ = false;
+  }
+
+  // 4) Post-read service (drain remain + clear INT)
+  bool cleared = false;
+  (void)post_read_irq_service_(spd_dev_, &cleared);
+
+  // Optional: stuck IRQ detector
+  update_irq_stuck_detector_(now_ms, gpio_get_level(static_cast<gpio_num_t>(int_gpio_)));
+
 }
 
 void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) {
@@ -359,8 +404,9 @@ void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) 
   const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
   if (now_ms - self->last_poll_ms_ < kPollMs) {
     data->state   = self->last_pressed_ ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-    data->point.x = self->last_x_; data->point.y = self->last_y_;
-    return;
+    data->point.x = self->last_x_; 
+    data->point.y = self->last_y_;
+    //return;
   }
   self->last_poll_ms_ = now_ms;
 
@@ -377,33 +423,52 @@ void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) 
     if (read_tp_status_length_(self->spd_dev_, &st) == ESP_OK) {
       if (st.read_len > 0 && (st.status_low.pt_exist || st.status_low.gesture)) {
         // 2) Read HDP frame
-        
 
         std::vector<uint8_t> hdp(st.read_len);
 
         // TEMP LOG
-        ESP_LOGD(TAG, "status: pt=%d gest=%d len=%u",
-                 (int)st.status_low.pt_exist, (int)st.status_low.gesture, (unsigned)st.read_len);
+        //ESP_LOGD(TAG, "status: pt=%d gest=%d len=%u",
+        //         (int)st.status_low.pt_exist, (int)st.status_low.gesture, (unsigned)st.read_len);
 
         if (spd_read_reg_(self->spd_dev_, REG_HDP, hdp.data(), hdp.size()) == ESP_OK) {
           // 3) Parse to LVGL point(s)
           cnt = parse_hdp_first_points_(hdp.data(), hdp.size(), points, 5);
 
           if (cnt > 0) {
-            data->state   = LV_INDEV_STATE_PRESSED;
-            data->point.x = points[0].x;
-            data->point.y = points[0].y;
-            self->last_pressed_ = true;
-            self->last_x_ = points[0].x; self->last_y_ = points[0].y;
+            // --- ORIENTATION TRANSFORM (add this block) ---
+            uint16_t x = points[0].x;
+            uint16_t y = points[0].y;
 
-            ESP_LOGD(TAG, "cnt=%u, x=%u y=%u strength=%u",
+            // Apply YAML-configured transforms locally
+            if (self->swap_xy_) {
+              uint16_t tmp = x; x = y; y = tmp;
+            }
+            if (self->mirror_x_) {
+              x = (self->w_ > 0) ? (self->w_ - 1 - x) : x;
+              ESP_LOGD(TAG, "Final touch point x=%u",
                      cnt, points[0].x, points[0].y, points[0].strength);
+            }
+            if (self->mirror_y_) {
+              y = (self->h_ > 0) ? (self->h_ - 1 - y) : y;
+            }
+
+            // Then use the transformed coordinates
+            data->state   = LV_INDEV_STATE_PRESSED;
+            data->point.x = x;
+            data->point.y = y;
+
+            self->last_pressed_ = true;
+            self->last_x_ = x;
+            self->last_y_ = y;
+
+            ESP_LOGD(TAG, "Final touch point cnt=%u, x=%u y=%u strength=%u",
+                       cnt, x, y, points[0].strength);
           } else {
             // gesture-only or zero-weight -> release
             data->state   = LV_INDEV_STATE_RELEASED;
             data->point.x = self->last_x_; data->point.y = self->last_y_;
             self->last_pressed_ = false;
-            // No press, don't log for now
+
             //ESP_LOGD(TAG, "cnt=0 (gesture-only or zero-weight)");
           }
         } else {
@@ -417,7 +482,7 @@ void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) 
         data->state   = LV_INDEV_STATE_RELEASED;
         data->point.x = self->last_x_; data->point.y = self->last_y_;
         self->last_pressed_ = false;
-        ESP_LOGD(TAG, "Status no points (len=%u)", st.read_len);
+        //ESP_LOGD(TAG, "Status no points (len=%u)", st.read_len);
       }
     } else {
       ESP_LOGW(TAG, "Status read failed");
@@ -435,10 +500,9 @@ void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) 
     // No IRQ asserted: fall back to previous cache so LVGL stays responsive
     data->state   = self->last_pressed_ ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
     data->point.x = self->last_x_; data->point.y = self->last_y_;
-    ESP_LOGD(TAG, "cnt=0 (IRQ not asserted)");
+    //ESP_LOGD(TAG, "cnt=0 (IRQ not asserted)");
   }
 }
-
 
 // Add PCA9554 device on the same bus (optional)
 esp_err_t Spd2010LvglGlue::pca9554_init(uint8_t i2c_addr) {
@@ -453,7 +517,6 @@ esp_err_t Spd2010LvglGlue::pca9554_init(uint8_t i2c_addr) {
   };
   ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(i2c_bus_, &dev_cfg, &pca_dev_), TAG, "add_device failed");
 
-  // Datasheet default: all pins inputs. Configure nothing yet. We will set per-pin mode on demand.
   ESP_LOGI(TAG, "PCA9554 added at 0x%02X", pca_addr_);
   return ESP_OK;
 }
@@ -513,7 +576,7 @@ void Spd2010LvglGlue::update_irq_stuck_detector_(uint32_t now_ms, int irq_level)
     if (stuck_ms > this->irq_stuck_threshold_ms_) {
       ESP_LOGW(TAG, "IRQ appears stuck low for %u ms; attempting force-clear", stuck_ms);
       if (this->spd_dev_) {
-        // Force a Clear-INT (safe, per your demo sequence)
+        // Force a Clear-INT
         (void)clear_int_(this->spd_dev_);
         vTaskDelay(pdMS_TO_TICKS(1));
         int irq_after = gpio_get_level((gpio_num_t) this->int_gpio_);
@@ -528,9 +591,7 @@ void Spd2010LvglGlue::update_irq_stuck_detector_(uint32_t now_ms, int irq_level)
   }
 }
 
-
-// Parse SPD2010 HDP frame into up to N points.
-// Returns number of points parsed.
+// Parse SPD2010 HDP frame into up to N points.Returns number of points parsed.
 
 static uint8_t parse_hdp_first_points_(const uint8_t *d, size_t len,
                                        esp_lcd_touch_point_data_t *out, uint8_t max_points) {
@@ -557,8 +618,6 @@ static uint8_t parse_hdp_first_points_(const uint8_t *d, size_t len,
   }
   return count;
 }
-
-
 
 }  // namespace spd2010_glue
 }  // namespace esphome
