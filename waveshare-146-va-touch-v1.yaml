@@ -6,6 +6,7 @@
 substitutions:
   bg_img: /config/esphome/images/default/waveshare_bg_tp420.jpg
   wifi_name: "Waveshare-146-Va"
+  left_sensor: "sensor.rumpus_wroom_battery_powerpal_real_time_power"
   right_switch: "light.tv_floor_lamp"
 
 esphome:
@@ -1453,14 +1454,14 @@ lvgl:
                       - homeassistant.action:
                           action: light.turn_on
                           data:
-                            entity_id: ${light.tv_floor_lamp}
+                            entity_id: ${right_switch}
                             #entity_id: light.aqara_hub_892a_lightbulb_892a
                     else:
                       - homeassistant.action:
                           action: light.turn_off
                           data:
                             #entity_id: light.aqara_hub_892a_lightbulb_892a
-                            entity_id: ${light.tv_floor_lamp}
+                            entity_id: ${right_switch}
                 - logger.log:
                     format: "Switch state: %d"
                     args: [ x ]
@@ -1571,7 +1572,7 @@ text_sensor:
 sensor:
   - platform: homeassistant
     id: ha_power_w
-    entity_id: sensor.rumpus_wroom_battery_powerpal_real_time_power
+    entity_id: ${left_sensor}
     internal: true
     on_value:
       then:
@@ -1634,8 +1635,7 @@ sensor:
 binary_sensor:
   - platform: homeassistant
     id: ha_nightlight_state
-    entity_id: light.tv_floor_lamp
-    #entity_id: light.aqara_hub_892a_lightbulb_892a
+    entity_id: ${right_switch}
     publish_initial_state: true
     on_state:
       then:
