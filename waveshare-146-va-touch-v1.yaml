@@ -1,7 +1,7 @@
 # v1.1 Removing request text, added bg image. added power meter reading.
 # avoid screen swap when Voice assistant, or timer is active.
 # Response and shopping list scroll when content is longer than it's label size
-# v1.2 touch integrated.
+# v1.2 touch integrated with spd2010_glue component
 ---
 substitutions:
   bg_img: /config/esphome/images/default/waveshare_bg_tp420.jpg
