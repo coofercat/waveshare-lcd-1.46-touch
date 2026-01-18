@@ -14,6 +14,9 @@ namespace spd2010_glue {
 class Spd2010LvglGlue : public Component {
  public:
   // Config setters
+ 
+  // Call this from on_boot (late) to initialize touch
+  void begin();
   void set_screen_size(uint16_t w, uint16_t h) { w_ = w; h_ = h; }
   void set_swap_xy(bool b) { swap_xy_ = b; }
   void set_mirror_x(bool b) { mirror_x_ = b; }
@@ -22,7 +25,14 @@ class Spd2010LvglGlue : public Component {
 
   void setup() override;
   void dump_config() override;
-  void loop() override;   
+  void loop() override;
+
+
+  float get_setup_priority() const override { 
+    // run setup() at the very end (but we’ll keep setup() empty)
+    return esphome::setup_priority::LATE; 
+  }
+  
   //  PCA9554 helpers (for backlight, GPIO expand, etc.) ---
   esp_err_t pca9554_init(uint8_t i2c_addr = 0x20);
   esp_err_t pca9554_set_pin_mode(uint8_t pin, bool output);     // true=output, false=input
@@ -65,7 +75,7 @@ class Spd2010LvglGlue : public Component {
   // IRQ stuck detection
   uint32_t irq_last_change_ms_{0};
   int      irq_last_level_{1};         // assume idle-high at boot
-  uint32_t irq_stuck_threshold_ms_{400}; // e.g., warn if low > 500 ms
+  uint32_t irq_stuck_threshold_ms_{400}; // e.g., warn if low > 400 ms
   bool indev_registered_{false};
   
   //--- Below for less resource usage.
@@ -77,7 +87,8 @@ class Spd2010LvglGlue : public Component {
 
   uint32_t last_touch_poll_ms_{0};
   uint8_t hdp_buf_[kMaxHdpBytes];               // pre-allocated parsing buffer
-
+  //late setup_priority
+  bool started_{false};
 };
 
 } // namespace spd2010_glue
