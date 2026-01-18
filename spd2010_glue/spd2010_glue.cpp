@@ -9,6 +9,7 @@
 
 namespace esphome {
 namespace spd2010_glue {
+
 static const char *const TAG = "spd2010_glue";
 
 // Forward declaration so lvgl_read_cb_() can call it
@@ -16,6 +17,7 @@ static uint8_t parse_hdp_first_points_(const uint8_t *d,
                                        size_t len,
                                        esp_lcd_touch_point_data_t *out,
                                        uint8_t max_points);
+
 
 // ===== SPD2010 raw register helpers (16-bit address) =====
 
@@ -57,6 +59,7 @@ inline bool tic_in_cpu (uint8_t sh) { return (sh & 0x20) != 0; }
 inline bool tint_low   (uint8_t sh) { return (sh & 0x10) != 0; }
 inline bool cpu_run    (uint8_t sh) { return (sh & 0x08) != 0; }
 
+
 struct tp_status_t {
   struct {
     uint8_t pt_exist : 1;
@@ -81,6 +84,7 @@ esp_err_t read_tp_status_length_(i2c_master_dev_handle_t dev, tp_status_t *st) {
   st->status_low.pt_exist    = (d[0] & 0x01);
   st->status_low.gesture     = (d[0] & 0x02);
   st->status_low.aux         = (d[0] & 0x08);
+
   st->status_high.tic_busy   = ((d[1] & 0x80) >> 7);
   st->status_high.tic_in_bios= ((d[1] & 0x40) >> 6);
   st->status_high.tic_in_cpu = ((d[1] & 0x20) >> 5);
@@ -183,13 +187,20 @@ esp_err_t post_read_irq_service_(i2c_master_dev_handle_t dev, bool *cleared) {
     return ESP_OK;
   }
 
+
   if (st.status_high.cpu_run && st.status_low.aux) {
     ESP_RETURN_ON_ERROR(clear_int_(dev), TAG, "clear INT");
   }
+
   return ESP_OK;
 }
 
-void Spd2010LvglGlue::setup() {
+
+//void Spd2010LvglGlue::setup() {
+
+void Spd2010LvglGlue::begin() {
+  if (started_) { ESP_LOGI(TAG, "Touch already started; skipping."); return; }
+
   // --- New I²C master bus API (IDF 5.x) ---
   i2c_master_bus_config_t bus_cfg{};
   bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
@@ -300,8 +311,16 @@ void Spd2010LvglGlue::setup() {
     }
     vTaskDelay(pdMS_TO_TICKS(50));
   }
-
+  //late setup_priority
+  started_ = true;
 }
+
+
+void Spd2010LvglGlue::setup() {
+  // Intentionally empty: we’ll call begin() later from on_boot.
+  ESP_LOGI(TAG, "Deferring SPD2010 init to on_boot/begin()");
+}
+
 
 void Spd2010LvglGlue::dump_config() {
   ESP_LOGCONFIG(TAG, "SPD2010 LVGL glue (I2C addr=0x53)");
@@ -324,6 +343,7 @@ void Spd2010LvglGlue::register_lvgl_indev_() {
   
   this->indev_ = lv_indev_drv_register(&this->indev_drv_);
   
+
   ESP_LOGI(TAG, "LVGL indev registered");
 }
 
@@ -395,6 +415,7 @@ void Spd2010LvglGlue::loop() {
   // Optional: stuck IRQ detector
   update_irq_stuck_detector_(now_ms, gpio_get_level(static_cast<gpio_num_t>(int_gpio_)));
 
+  
 }
 
 void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) {
@@ -504,6 +525,7 @@ void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) 
   }
 }
 
+
 // Add PCA9554 device on the same bus (optional)
 esp_err_t Spd2010LvglGlue::pca9554_init(uint8_t i2c_addr) {
   pca_addr_ = i2c_addr;
@@ -591,7 +613,9 @@ void Spd2010LvglGlue::update_irq_stuck_detector_(uint32_t now_ms, int irq_level)
   }
 }
 
-// Parse SPD2010 HDP frame into up to N points.Returns number of points parsed.
+
+// Parse SPD2010 HDP frame into up to N points.
+// Returns number of points parsed.
 
 static uint8_t parse_hdp_first_points_(const uint8_t *d, size_t len,
                                        esp_lcd_touch_point_data_t *out, uint8_t max_points) {
