@@ -4,23 +4,33 @@
 # v1.2 touch integrated with spd2010_glue component
 ---
 substitutions:
-  bg_img: /config/esphome/images/default/waveshare_bg_tp420.jpg
+  #bg_img: /config/esphome/images/default/waveshare_bg_tp420.jpg
+  bg_img: "https://raw.githubusercontent.com/chickymonkey/waveshare-lcd-1.46-touch/refs/heads/main/waveshare_bg_tp420.jpg"
+  music_bg_img: "/config/esphome/images/default/music_bg_412.png"
   wifi_name: "Waveshare-146-Va"
   left_sensor: "sensor.rumpus_wroom_battery_powerpal_real_time_power"
   right_switch: "light.tv_floor_lamp"
+  external_media_player: "ke_ting_xiao_ai_pro_play_control"
 
 esphome:
   name: waveshare-146-va
   friendly_name: waveshare 146 va 1.2
   on_boot:
-    priority: 600
-    then:
-      - delay: 15s
-      #- text_sensor.template.publish: { id: text_response, state: "Say Hey Jarvis" }
-      - script.execute: draw_display
-      - media_player.speaker.play_on_device_media_file:
-          media_file: timer_finished_sound
-          announcement: true
+    - priority: 600
+      then:
+        - delay: 15s
+        #- text_sensor.template.publish: { id: text_response, state: "Say Hey Jarvis" }
+        - script.execute: draw_display
+        - media_player.speaker.play_on_device_media_file:
+            media_file: timer_finished_sound
+            announcement: true
+
+    # You can have multiple on_boot blocks; this one runs late
+    - priority: -100 
+      then:
+        - delay: 300ms
+        - lambda: |-
+            id(touch_glue).begin();
         
 esp32:
   board: esp32-s3-devkitc-1
@@ -43,15 +53,16 @@ esp32:
       CONFIG_SPIRAM_RODATA: y
       CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
       CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
-      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
-      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y"  # TLS1.3 support isn't enabled by default in IDF 5.1.5
+      #CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      #CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y"  # TLS1.3 support isn't enabled by default in IDF 5.1.5
 
 logger:
   level: WARN
 
 api:
-  encryption:
-    key: "="
+# Disabled encryption 
+#encryption:
+#    key: "/NRi8kWEuodQFhY40a8yvujDUELH0yhZIOTECv81wU0="
 
   on_client_connected:
     then:
@@ -61,11 +72,11 @@ api:
       - script.execute: draw_display
 #used to check free ram, cpu.
 debug:
-  update_interval: 15s
+  update_interval: 30s
 
 ota:
   - platform: esphome
-    password: "1554a3a8fd1fa8d97307d74f21aa9fde"
+    password: "yourencryption"
 
 wifi:
   ssid: !secret wifi_ssid
@@ -81,24 +92,15 @@ captive_portal:
 external_components:
   - source: components
 
-spd2010_glue:
-  id: touch_glue
-  width: 412
-  height: 412
-  int_gpio: 4       # plain integer; we handle GPIO internally
-  swap_xy: false
-  mirror_x: true
-  mirror_y: true
-  
 time:
   - platform: homeassistant
     on_time:
-      - hours: 1,2,3,4,5,6,7
+      - hours: 1,2,3,4,5
         minutes: 5
         seconds: 0
         then:
           - switch.turn_on: switch_antiburn
-      - hours: 1,2,3,4,5,6,7
+      - hours: 1,2,3,4,5
         minutes: 50
         seconds: 0
         then:
@@ -107,62 +109,31 @@ time:
 interval:
   - interval: 60s
     then:
-      - if:
-          condition:
-            and:
-              # 1) no current conversation
-              - not:
-                  voice_assistant.is_running:
+      - script.execute: check_dim
+      
+#  - interval: 1s
+#    then:
+#      - if:
+#          condition:
+#            lambda: 'return id(va_blinking);'
+#          then:
+#            - lambda: |-
+#                id(va_blink_on) = !id(va_blink_on);
+#            # Use two explicit branches so we can pass literal percent values
+#            - if:
+#                condition:
+#                  lambda: 'return id(va_blink_on);'
+#                then:
+#                  - lvgl.label.update:
+#                      id: va_phase_label
+#                      text_opa: 90%
+#
+#                else:
+#                  - lvgl.label.update:
+#                      id: va_phase_label
+#                      text_opa: 10%
 
-              # 2) At least 2min since the last TTS playback
-              - lambda: |-
-                  return (millis() - id(last_tts_ms)) > 120000;
-
-              # 3) We iterate voice assistant timers and ensure none is active.
-              - lambda: |-
-                  const auto timers = id(va).get_timers();
-                  for (auto &kv : timers) {
-                    const auto &t = kv.second;
-                    if (t.is_active && t.seconds_left > 0) {
-                      return false; 
-                    }
-                  }
-                  return true;         // no active timers => OK to dim
-              
-              # 4) Only dim if current brightness is not already ~30%
-              - lambda: |-
-                  const float b = id(screen_backlight).current_values.get_brightness();
-                  // Use a tolerance of +/- 1% to account for float rounding
-                  return fabsf(b - 0.30f) > 0.01f;
-
-          then:
-              # Dim off screen (only when all 4 are true)
-            - light.turn_on:
-                id: screen_backlight
-                brightness: 30%
-  - interval: 1s
-    then:
-      - if:
-          condition:
-            lambda: 'return id(va_blinking);'
-          then:
-            - lambda: |-
-                id(va_blink_on) = !id(va_blink_on);
-            # Use two explicit branches so we can pass literal percent values
-            - if:
-                condition:
-                  lambda: 'return id(va_blink_on);'
-                then:
-                  - lvgl.label.update:
-                      id: va_phase_label
-                      text_opa: 90%
-
-                else:
-                  - lvgl.label.update:
-                      id: va_phase_label
-                      text_opa: 10%
-
-      - script.execute: update_timer_progress_arc
+#      - script.execute: update_timer_progress_arc
 
 psram:
   mode: octal
@@ -200,8 +171,9 @@ speaker:
     i2s_audio_id: i2s_output
     i2s_dout_pin: GPIO47
     dac_type: external
-    channel: stereo
-    buffer_duration: 600ms #default 500ms
+    #channel: stereo
+    channel: mono
+    buffer_duration: 800ms #default 500ms
 
 # MEDIA PLAYER → binds VA audio output to your existing i2s speaker
 media_player:
@@ -271,8 +243,7 @@ voice_assistant:
   micro_wake_word: mww
   noise_suppression_level: 1
   auto_gain: 31dBFS
-  volume_multiplier: 2.5
-
+  volume_multiplier: 2
   # Screen hooks (update response + phases)
   on_listening:
     - lambda: id(voice_assistant_phase) = id(voice_assist_listening_phase_id);
@@ -292,13 +263,13 @@ voice_assistant:
         brightness: 80%
     #listening effect for listening status.
     - lambda: |-
-        id(va_blinking) = true;
+        //id(va_blinking) = true;
         id(va_listening_glow) = true;
     - lvgl.widget.update:
         id: va_phase_label
         text_opa: 100%
     - script.execute: update_timer_progress_arc
-
+    - lambda: 'id(last_active_ms) = millis();'
 
   on_stt_vad_end:
     - lambda: id(voice_assistant_phase) = id(voice_assist_thinking_phase_id);
@@ -317,7 +288,7 @@ voice_assistant:
         state: !lambda return x;
     - lambda: id(voice_assistant_phase) = id(voice_assist_replying_phase_id);
     - script.execute: draw_display
-    - lambda: 'id(last_tts_ms) = millis();'
+    - lambda: 'id(last_active_ms) = millis();'
     - lvgl.widget.update:
         id: timer_progress_arc
         hidden: true
@@ -331,8 +302,7 @@ voice_assistant:
           media_player.is_announcing:
         timeout: 1.5s
     
-    - lambda: 'id(last_tts_ms) = millis();'
-    # keep your existing on_end actions (wait_until, set_idle_or_mute_phase, draw_display, etc.)
+    - lambda: 'id(last_active_ms) = millis();'
     
     - wait_until:
         condition:
@@ -381,8 +351,6 @@ voice_assistant:
         id: timer_progress_arc
         hidden: true
 
-
-
   on_client_connected:
     - lambda: id(init_in_progress) = false;
     - script.execute: start_wake_word
@@ -421,13 +389,14 @@ voice_assistant:
     - script.execute: update_timer_progress_arc
     - script.execute: ring_timer_12x
     - lambda: id(voice_assistant_phase) = id(voice_assist_timer_finished_phase_id);
-    - script.execute: draw_display
     - lvgl.widget.update:
         id: timer_progress_arc
         hidden: true
     - light.turn_on:
         id: screen_backlight
         brightness: 80%
+    - text_sensor.template.publish: { id: text_response, state: "Say 'HEY JARVIS'" }
+    - script.execute: draw_display
 button:
   - platform: restart
     name: "Kitchen ESP Restart"
@@ -827,7 +796,10 @@ script:
             - script.stop: listening_arc_pulse
             - if:
                 condition:
-                  lambda: 'return id(timer_progress_has_timer);'
+                  #lambda: 'return id(timer_progress_has_timer);'
+                  lambda: |-
+                          return id(timer_progress_has_timer) && (id(timer_progress_seconds_left) > 0);
+
                 then:
                   - lvgl.arc.update:
                       id: timer_progress_arc
@@ -872,7 +844,61 @@ script:
                       id: timer_progress_text
                       hidden: true
 
-  
+  - id: my_media_pause
+    then:
+      - homeassistant.action:
+          action: media_player.media_pause
+          data:
+            entity_id: media_player.${external_media_player}
+      - delay: 50ms
+  - id: my_media_play
+    then:
+      - homeassistant.action:
+          action: media_player.media_play
+          data:
+            entity_id: media_player.${external_media_player}
+      - delay: 50ms
+  - id: my_media_prev
+    then:
+      - homeassistant.action:
+          action: media_player.media_previous_track
+          data:
+            entity_id: media_player.${external_media_player}
+      - delay: 50ms
+  - id: my_media_next
+    then:
+      - homeassistant.action:
+          action: media_player.media_next_track
+          data:
+            entity_id: media_player.${external_media_player}
+      - delay: 50ms
+
+  - id: check_dim
+    mode: queued
+    then:
+      - if:
+          condition:
+            and:
+              #- not: voice_assistant.is_running
+              - lambda: 'return (millis() - id(last_active_ms)) > 120000;'
+              - lambda: |-
+                  const auto timers = id(va).get_timers();
+                  for (auto &kv : timers) {
+                    const auto &t = kv.second;
+                    if (t.is_active && t.seconds_left > 0) return false;
+                  }
+                  return true;
+                
+              - lambda: |-
+                  const float b = id(screen_backlight).current_values.get_brightness();
+                  return fabsf(b - 0.40f) > 0.02f;
+          then:
+            - light.turn_on:
+                id: screen_backlight
+                brightness: 40%
+            - logger.log: "DIMMER: All conditions met → setting brightness=40%"
+          else:
+            - logger.log: "DIMMER: Not conditions met"
 #pca9554:
 #  - id: 'pca9554a_device'
 #    address: 0x20
@@ -1325,21 +1351,31 @@ display:
       - [ 0x11, 0x00]      
       - delay 120ms
 lvgl:
-  
-  gradients:
-    - id: listen_rog
-      direction: hor
-      dither: none
-      stops:
-        - color: 0xFF0000  # Red
-          position: 0%
-        - color: 0xFFA500  # Orange
-          position: 50%    # midpoint
-        - color: 0x00FF00  # Green
-          position: 100%
-
+  page_wrap: true
   pages:
     - id: main_page
+      on_press:
+        then:
+          - light.turn_on:
+              id: screen_backlight
+              brightness: 80%
+          - switch.turn_off: switch_antiburn
+      on_click: 
+        then:
+          - lambda: 'id(last_active_ms) = millis();'
+      on_swipe_left:
+        then:
+          # swallow any pending click so buttons don't also fire
+          - lambda: 'lv_indev_wait_release(lv_indev_get_act());'
+          - lvgl.page.next:
+              animation: FADE_OUT
+              time: 200ms
+      on_swipe_right:
+        then:
+          - lambda: 'lv_indev_wait_release(lv_indev_get_act());'
+          - lvgl.page.next:
+              animation: FADE_OUT
+              time: 200ms
       bg_image_src: round_bg
       bg_image_opa: COVER
       bg_opa: transp
@@ -1407,6 +1443,8 @@ lvgl:
             text_font: montserrat_26
             text_color: 0xffffff
             height: 155
+            #width: 185
+            max_width: 180
             long_mode: SCROLL_CIRCULAR
         - label:
             align: CENTER
@@ -1425,9 +1463,10 @@ lvgl:
         - switch:
             id: esp_tvlight_switch
             align: CENTER
-            width: 90
-            height: 36
-            x: 158
+            max_width: 75
+            width: 75
+            height: 38
+            x: 169
             y: 15
             on_value:
               then:
@@ -1511,16 +1550,129 @@ lvgl:
               width: 15        # ring thickness in pixels
               arc_color: green
 
-                 
+    - id: media_page
+      bg_opa: transp
+      bg_image_src: music_round_bg
+      bg_image_opa: COVER
+      on_press:
+        then:
+          - light.turn_on:
+              id: screen_backlight
+              brightness: 80%
+          - switch.turn_off: switch_antiburn
+      on_click: 
+        then:
+          - lambda: 'id(last_active_ms) = millis();'
+      on_swipe_right:
+        then:
+          - lambda: 'lv_indev_wait_release(lv_indev_get_act());'
+          - lvgl.page.previous:
+              animation: FADE_IN
+              time: 200ms
+      on_swipe_left:
+        then:
+          - lambda: 'lv_indev_wait_release(lv_indev_get_act());'
+          - lvgl.page.previous:
+              animation: FADE_IN
+              time: 200ms
+      widgets:
+        - label:
+            id: page_name_label
+            align: CENTER
+            y: -160
+            text: "\U000F075A"
+            text_font: roboto_icons_70
+            text_color: yellow
+        - label:
+            id: lbl_header
+            width: 320
+            align: CENTER
+            text_align: CENTER
+            text_font: montserrat_24
+            text_color: 0xFFFFFF
+            y: -105
 
+        - label:
+            id: lbl_title
+            y: -30
+            pad_all: 25
+            width: 500
+            bg_opa: 40%
+            styles: box_style
+            text_font: montserrat_28
+            text: "Title: unknown"
+            long_mode: SCROLL_CIRCULAR
+        
+        - button:
+            id: bm_prev
+            text: "\U000F04AE"
+            text_font: roboto_icons_70
+            y: 70
+            x: -110
+            pad_left: 20
+            pad_right: 20
+            width: 90
+            height: 72
+            bg_opa: transp
+            shadow_opa: transp
+            styles: box_style
+            pressed:
+              bg_color: 0xFFFF00
+            on_click:
+              - lambda: |-
+                  id(my_media_prev).execute();
+
+        - button:
+            id: bm_play
+            text: "\U000F040A"
+            text_font: roboto_icons_70
+            y: 70
+            width: 100
+            height: 72
+            pad_left: 25
+            pad_right: 25
+            bg_opa: transp
+            shadow_opa: transp
+            styles: box_style
+            pressed:
+              text_color: 0xFFFF00
+            on_click:
+              - lambda: |-
+                  auto state = id(ha_media_status).state;
+                  if (state == "playing") {
+                    id(my_media_pause).execute();
+                  } else {
+                    id(my_media_play).execute();
+                  }
+
+        - button:
+            id: btn_next
+            text: "\U000F04AD"
+            text_font: roboto_icons_70
+            y: 70
+            x: 110
+            pad_left: 20
+            pad_right: 20
+            width: 90
+            height: 72
+            bg_opa: transp
+            shadow_opa: transp     
+            styles: box_style
+            pressed:
+              bg_color: 0xFFFF00
+            on_click:
+              - lambda: |-
+                  id(my_media_next).execute();
+    
   style_definitions:
-    # ── white box with black border (used for response)
     - id: box_style
-      border_color: white
-      border_width: 2
-      pad_all: 6
-      radius: 4
+      align: CENTER
+      text_align: CENTER
+      radius: 5
       text_color: white
+      pad_all: 15
+      bg_color: 0x000000
+      bg_opa: 60%
 
     # a dimmed style for muted page
     - id: muted_bg_style
@@ -1530,9 +1682,6 @@ lvgl:
     - id: shopping_item_style
       bg_opa: transp
       bg_color: 0xFFFFFF
-      border_width: 2
-      border_color: 0x000000
-      radius: 10
       pad_left: 14
       pad_right: 14
       pad_top: 8
@@ -1547,11 +1696,72 @@ lvgl:
       pad_all: 4
       align: CENTER 
 
+spd2010_glue:
+  id: touch_glue
+  width: 412
+  height: 412
+  int_gpio: 4       # plain integer; we handle GPIO internally
+  swap_xy: false
+  mirror_x: true
+  mirror_y: true
+
 # TEXT SENSORS → last response
 # -----------------------------------------------------------------------------
 text_sensor:
   - platform: template
     id: text_response
+  ##external media status friendly_name
+  - platform: homeassistant
+    entity_id: media_player.${external_media_player}
+    id: ha_friendly_name
+    attribute: friendly_name
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_header
+            text: !lambda |-
+              std::string name = id(ha_friendly_name).state;
+              if (!name.empty()) name[0] = toupper(name[0]);
+              return name + " - " + id(ha_media_status).state;
+
+  - platform: homeassistant
+    entity_id: media_player.${external_media_player}
+    id: ha_media_status
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_header
+            text: !lambda |-
+              std::string name = id(ha_friendly_name).state;
+              if (!name.empty()) name[0] = toupper(name[0]);
+              return name + " - " + id(ha_media_status).state;
+        - lvgl.button.update:
+            id: bm_play
+            text: !lambda |-
+              //Alternate icon depending on status "\U000F03E4", #pause "\U000F040A", #play
+              return (id(ha_media_status).state == "playing")
+                ? std::string("\U000F03E4")   // e.g., mdi-pause
+                : std::string("\U000F040A");  // e.g., mdi-play
+
+
+  - platform: homeassistant
+    entity_id: media_player.${external_media_player}
+    id: ha_media_title
+    attribute: media_title
+    on_value:
+
+      then:
+        - lvgl.label.update:
+            id: lbl_title
+            text: !lambda |-
+              if (id(ha_media_title).has_state() && !id(ha_media_title).state.empty()) {
+                std::string t = id(ha_media_title).state;
+                std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+                //return std::string("Title: ") + t;
+                return t;
+              } else {
+                return std::string("Title: unknown");
+              }
 
 sensor:
   - platform: homeassistant
@@ -1564,7 +1774,6 @@ sensor:
             id: power_value_lbl
             text:
               format: "%d W"
-              # IMPORTANT: this is a plain expression string, not !lambda
               args: [ "(int) roundf(id(ha_power_w).state)" ]
    # Reports the WiFi signal strength/RSSI in dB
 
@@ -1573,8 +1782,6 @@ sensor:
     id: wifi_signal_db
     update_interval: 60s
     entity_category: "diagnostic"
-    
-
 
   - platform: copy # WiFi signal in %
     source_id: wifi_signal_db
@@ -1690,7 +1897,7 @@ globals:
     restore_value: false
     initial_value: "10"
 
-  - id: last_tts_ms
+  - id: last_active_ms
     type: int
     restore_value: false
     initial_value: "0"
@@ -1768,7 +1975,6 @@ color:
     hex: 'FFC000'
 
 font:    
-
   - file: "gfonts://Roboto+Condensed"
     id: roboto_icons_25
     size: 25
@@ -1803,11 +2009,35 @@ font:
           "\U000F16BC",  #wifidisconnected
           "\U000F0241", #lightening
           "\U000F050F", #thermometer
-          "\U000F06E8" #light on
+          "\U000F06E8", #light on
+          "\U000F03E4", #pause
+          "\U000F040A", #play
+          "\U000F040E", #play/pause
+          "\U000F04AD",#next track
+          "\U000F04AE", #previous track
+          "\U000F075A"#music
           ]
-
+  - file: "gfonts://Roboto+Condensed"
+    id: roboto_icons_70
+    size: 70
+    bpp: 4
+    extras:
+      - file: "https://github.com/chickymonkey/esphome/raw/refs/heads/main/font/materialdesignicons-webfont.ttf"
+        glyphs: [
+          "\U000F03E4", #pause
+          "\U000F040A", #play
+          "\U000F040E", #play/pause
+          "\U000F04AD",#next track
+          "\U000F04AE", #previous track
+          "\U000F075A"#music
+          ]
 image:
   - file: ${bg_img}
     id: round_bg
     type: RGB565    # good balance of quality & size
     resize: 412x412
+  - file: ${music_bg_img}
+    id: music_round_bg
+    type: RGB565    # good balance of quality & size
+    resize: 412x412
+#music_bg_img
