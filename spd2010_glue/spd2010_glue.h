@@ -1,4 +1,3 @@
-
 #pragma once
 #include "esphome/core/component.h"
 #include "sdkconfig.h"
@@ -40,7 +39,7 @@ class Spd2010LvglGlue : public Component {
 
  protected:
   void register_lvgl_indev_();
-  static void lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data);
+  static void lvgl_read_cb_(lv_indev_t *indev, lv_indev_data_t *data);
 
   // NEW: stuck-IRQ helper declaration
   void update_irq_stuck_detector_(uint32_t now_ms, int irq_level);
@@ -57,8 +56,7 @@ class Spd2010LvglGlue : public Component {
   // raw SPD2010 device handle (0x53) on the same I²C bus
   i2c_master_dev_handle_t spd_dev_{nullptr};
 
-  // LVGL indev
-  lv_indev_drv_t indev_drv_{};
+  // LVGL indev (LVGL v9: no driver struct, just the indev handle)
   lv_indev_t *indev_{nullptr};
 
   // Screen & orientation
