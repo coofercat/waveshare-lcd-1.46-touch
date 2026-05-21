@@ -333,16 +333,12 @@ void Spd2010LvglGlue::dump_config() {
 }
 
 void Spd2010LvglGlue::register_lvgl_indev_() {
-  lv_indev_drv_init(&this->indev_drv_);
-  this->indev_drv_.type      = LV_INDEV_TYPE_POINTER;
-  this->indev_drv_.read_cb   = &Spd2010LvglGlue::lvgl_read_cb_;
-  this->indev_drv_.user_data = this;
-  
-    // bind to the display
-  this->indev_drv_.disp = lv_disp_get_default();
-  
-  this->indev_ = lv_indev_drv_register(&this->indev_drv_);
-  
+  // LVGL v9: no driver struct; create indev directly and configure via setters
+  this->indev_ = lv_indev_create();
+  lv_indev_set_type(this->indev_, LV_INDEV_TYPE_POINTER);
+  lv_indev_set_read_cb(this->indev_, &Spd2010LvglGlue::lvgl_read_cb_);
+  lv_indev_set_user_data(this->indev_, this);
+  lv_indev_set_display(this->indev_, lv_display_get_default());
 
   ESP_LOGI(TAG, "LVGL indev registered");
 }
@@ -350,7 +346,7 @@ void Spd2010LvglGlue::register_lvgl_indev_() {
 void Spd2010LvglGlue::loop() {
   if (!indev_registered_) {
     
-    if (lv_disp_get_default()) {
+    if (lv_display_get_default()) {
       register_lvgl_indev_();
       indev_registered_ = true;
     }
@@ -418,8 +414,8 @@ void Spd2010LvglGlue::loop() {
   
 }
 
-void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_drv_t *drv, lv_indev_data_t *data) {
-  auto *self = reinterpret_cast<Spd2010LvglGlue *>(drv->user_data);
+void Spd2010LvglGlue::lvgl_read_cb_(lv_indev_t *indev, lv_indev_data_t *data) {
+  auto *self = reinterpret_cast<Spd2010LvglGlue *>(lv_indev_get_user_data(indev));
   if (!self) { data->state = LV_INDEV_STATE_RELEASED; data->point.x = data->point.y = 0; return; }
 
   const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
