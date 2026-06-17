@@ -1,8 +1,7 @@
 # This file has been separated out to make reading the main ESPHome Yaml easier. It's
 # perfectly fine to paste it in directly if you prefer
-display:
-  - platform: qsbi_dbi
-    init_sequence:
+substitutions:
+   INIT_SEQUENCE:
       - [ 0xFF, 0x20, 0x10, 0x00]
       - [ 0x36, 0x00]
       - [ 0x3A, 0x55]
