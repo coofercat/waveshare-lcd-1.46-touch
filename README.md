@@ -1,48 +1,25 @@
 # waveshare-lcd-1.46-touch
 
 Device: https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-1.46B
-This project is for esphome, download the three files in esp2010_glue folder and put it into esphome\components\esp2010_glue
 
-Added external component spd2010_glue, which glue the official lcd_touch driver and lcd_touch_spd2010.
+Also see the original work that this repo is based on: https://github.com/chickymonkey/waveshare-lcd-1.46-touch
 
-## Functions
-- Voice assistant
-- LCD screen showing shoppint list active items
-- Showing home current energy (needs your own sensor)
-- Switch for a light, or any light
-- Touch screen function for lvgl.
+## What is this?
 
-## Shopping list
-My device works as a fridge magenet, so I put shopping list in the middle.
-Find the text sensor from the device, and create below automation in HA to sync shopping list item through.
-```yaml
-alias: Update Shopping list for waveshare list.
-description: ""
-triggers:
-  - trigger: time_pattern
-    seconds: /20
-conditions: []
-actions:
-  - action: todo.get_items
-    metadata: {}
-    data:
-      status: needs_action
-    target:
-      entity_id: todo.shopping_list
-    response_variable: shopping_list_items
-  - action: text.set_value
-    metadata: {}
-    target:
-      entity_id: text.waveshare_va_shopping_list
-    data:
-      value: >-
-        {% set items = shopping_list_items['todo.shopping_list']['items'] |
-        default([]) %}
+This is a super-simplified version of the above repo, used to demonstrate the screen
+working properly on this device, even though (at time of writing) it's not directly
+supported by ESPHome. It's not a full application, it's just a demo that shows the
+current time on the screen.
 
-        {% if items | length > 0 %}     
-          {{ '\u2022 ' ~ (items | map(attribute='summary') | list | join('\n\u2022 ')) }}     
-        {% else %}
-          Empty      
-        {% endif %}
-mode: single
-```
+## Why?
+
+This repo serves as a starting point for anyone wanting to make apps on the device.
+Rather than starting with a finished app and having to pull things out, here you can
+start with very little and work your way up to a full application.
+
+I'd recommend looking at @chickymonkey's work though, as they have used a lot of the
+peripherals on the device, so there are some good examples of how to do things there.
+
+## How?
+
+(under construction)
