@@ -11,6 +11,10 @@ working properly on this device, even though (at time of writing) it's not direc
 supported by ESPHome. It's not a full application, it's just a demo that shows the
 current time on the screen.
 
+I've pulled in a change in one of the forks of the original project (which at time of writing
+hadn't made it into a PR to the parent project yet). That means you can use the I2C for multiple
+tasks (which the original parent project didn't allow for).
+
 ## Why?
 
 This repo serves as a starting point for anyone wanting to make apps on the device.
@@ -132,6 +136,13 @@ spi:
   clk_pin: GPIO40
   interface: spi2
   data_pins: [GPIO46, GPIO45, GPIO42, GPIO41]
+
+# This is for touch events
+i2c:
+  i2c:
+  scl: GPIO10
+  sda: GPIO11
+  scan: True
 
 # This is the display initialisation. Most of this probably shouldn't be
 # edited unless you know what you're doing
