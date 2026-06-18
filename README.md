@@ -89,11 +89,11 @@ captive_portal:
 # which we use later on. This avoids having that long sequence of numbers in this
 # code file
 packages:
-  remote_package_shorthand: github://coofercat/waveshare-lcd-1.46-touch/init_sequence.yaml
+  remote_package_shorthand: github://coofercat/waveshare-lcd-1.46-touch/init_sequence.yaml@main
 
 # This pulls in the spd2010_glue touch driver
 external_components:
-  - source: github://coofercat/waveshare-lcd-1.46-touch
+  - source: github://coofercat/waveshare-lcd-1.46-touch@main
 
 # This demo shows the time, so we use this to set the display
 # 'label' once every second.
