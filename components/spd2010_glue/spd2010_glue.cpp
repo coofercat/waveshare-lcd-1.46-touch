@@ -211,13 +211,6 @@ void Spd2010LvglGlue::begin() {
     return;
   }
 
-  i2c_master_bus_handle_t i2c_bus = nullptr;
-  esp_err_t err = i2c_new_master_bus(&bus_cfg, &i2c_bus);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "i2c_new_master_bus failed: %d", (int)err);
-    return;
-  }
-
   // This verifies the touch controller at 0x53 ACKs before we install the panel IO.
   esp_err_t probe = i2c_master_probe(i2c_bus, 0x53, -1);
   ESP_LOGI(TAG, "SPD2010 probe 0x53: %s", esp_err_to_name(probe));
