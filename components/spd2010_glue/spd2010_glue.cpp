@@ -201,13 +201,15 @@ esp_err_t post_read_irq_service_(i2c_master_dev_handle_t dev, bool *cleared) {
 void Spd2010LvglGlue::begin() {
   if (started_) { ESP_LOGI(TAG, "Touch already started; skipping."); return; }
 
-  // --- New I²C master bus API (IDF 5.x) ---
-  i2c_master_bus_config_t bus_cfg{};
-  bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
-  bus_cfg.i2c_port   = I2C_NUM_0;
-  bus_cfg.sda_io_num = (gpio_num_t)11;   // GPIO11
-  bus_cfg.scl_io_num = (gpio_num_t)10;   // GPIO10
-  bus_cfg.flags.enable_internal_pullup = true;
+  // Reuse the I2C master bus ESPHome already created on this port.
+  // Calling i2c_new_master_bus() again on the same port (I2C_NUM_0 / GPIO11/10)
+  // wedges the other owner -> "i2c.master: I2C software timeout".
+  i2c_master_bus_handle_t i2c_bus = nullptr;
+  esp_err_t err = i2c_master_get_bus_handle(I2C_NUM_0, &i2c_bus);
+  if (err != ESP_OK || i2c_bus == nullptr) {
+    ESP_LOGE(TAG, "i2c_master_get_bus_handle(port 0) failed: %s", esp_err_to_name(err));
+    return;
+  }
 
   i2c_master_bus_handle_t i2c_bus = nullptr;
   esp_err_t err = i2c_new_master_bus(&bus_cfg, &i2c_bus);
