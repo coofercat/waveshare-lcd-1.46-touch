@@ -139,7 +139,6 @@ spi:
 
 # This is for touch events
 i2c:
-  i2c:
   scl: GPIO10
   sda: GPIO11
   scan: True
@@ -195,10 +194,16 @@ spd2010_glue:
   int_gpio: 4       # plain integer; we handle GPIO internally
   swap_xy: false
   mirror_x: true
-  mirror_y: true
+  mirror_y: false
 
 ```
 
 Once that's flashed the device should reboot and show you the time. Mine looks like this:
 
 ![example device screen](screen.jpg)
+
+## Miscellaneous
+
+- If you find that you can't get `on_touch` or `on_click` to work on anything that isn't in the
+  middle of the screen, try changing `mirror_x` and `mirror_y` around. They don't change where
+  LVGL puts the button or text, but they do change where the touch sensitivity goes.
